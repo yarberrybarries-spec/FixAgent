@@ -129,10 +129,9 @@ class ChatResponse(BaseResponse):
         json_schema_extra = {
             "example": {
                 "success": True,
-                "message": "操作成功",
+                "message": "电动机轴承过热可能由以下原因造成：1. 润滑不良...",
                 "code": 200,
                 "session_id": "sess_abc123",
-                "message": "电动机轴承过热可能由以下原因造成：1. 润滑不良...",
                 "intention": "troubleshoot",
                 "tools_used": ["knowledge_retrieval", "graph_query"],
                 "latency_ms": 1500

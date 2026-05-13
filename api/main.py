@@ -3,11 +3,9 @@ import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional, List
 from datetime import datetime
 from schemas.request import ChatRequest, KnowledgeSearchRequest, MemoryConsolidateRequest
 from schemas.response import ChatResponse, KnowledgeSearchResponse, BaseResponse, MemoryConsolidateResponse
-from schemas.models import AgentMode
 from agents.orchestrator_agent import get_orchestrator_agent
 from agents.memory_agent import get_memory_agent
 from agents.base_agent import AgentInput
@@ -20,6 +18,9 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
+
+
+_orchestrator = None
 
 
 def _get_orchestrator():
@@ -215,8 +216,12 @@ async def memory_consolidate(request: MemoryConsolidateRequest) -> MemoryConsoli
 """全局异常处理"""
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
-    return BaseResponse(
-        success=False,
-        message=str(exc),
-        code=500
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=500,
+        content=BaseResponse(
+            success=False,
+            message=str(exc),
+            code=500
+        ).model_dump()
     )

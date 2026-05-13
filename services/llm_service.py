@@ -213,7 +213,7 @@ class LLMService:
                     "duration_ms": step_duration_ms
                 })
                 response["trace"] = trace
-                logger.info(f"[llm] chat_with_tools finished iterations={i+1} total_duration_ms={step_duration_ms}")
+                logger.info(f"[llm] chat_with_tools finished iterations={i+1} last_step_duration_ms={step_duration_ms}")
                 return response
 
             # 收集本轮工具调用详情

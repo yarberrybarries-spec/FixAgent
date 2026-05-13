@@ -716,21 +716,39 @@ class DocumentParseRequest(BaseModel):
 
 # ==================== 记忆整理相关 ====================
 
-class ConversationItem(BaseModel):
+class MemoryMessage(BaseModel):
     """
-    对话记录单项
+    记忆消息
 
-    【功能关联】记忆整理、工作记忆压缩
-    【何时用】Java 端收集到阈值数量的对话后，打包发给 Python 做整理时
-
-    【字段说明】
-    - seq: 对话序号，用于保持顺序
-    - role: 发言角色（user 或 assistant）
-    - content: 发言内容
+    【功能关联】记忆整理
+    【对应 Java】ai.weixiu.entity.MemoryMessage
     """
-    seq: int = Field(..., description="对话序号")
     role: str = Field(..., description="角色: user/assistant")
-    content: str = Field(..., description="对话内容")
+    content: str = Field(..., description="消息内容")
+
+
+class MemoryPreferenceVO(BaseModel):
+    """
+    偏好记忆
+
+    【功能关联】记忆整理
+    【对应 Java】ai.weixiu.pojo.vo.MemoryPreferenceVO
+    """
+    content: str = Field(..., description="偏好描述")
+    category: str = Field(..., description="分类: 交互风格|格式要求|工作习惯|关注领域|其他")
+    preferenceCategory: int = Field(..., description="偏好类型: 0=用户级(所有对话公用), 1=会话级(单次会话公用)")
+
+
+class MemoryUnresolvedVO(BaseModel):
+    """
+    未完成摘要
+
+    【功能关联】记忆整理
+    【对应 Java】ai.weixiu.pojo.vo.MemoryUnresolvedVO
+    """
+    content: str = Field(..., description="未完成任务摘要描述")
+    type: str = Field(..., description="类型: 未答复回答|进行中任务|用户代办")
+    status: str = Field(..., description="状态: active=进行中, superseded=已放弃")
 
 
 class MemoryConsolidateRequest(BaseModel):
@@ -743,23 +761,13 @@ class MemoryConsolidateRequest(BaseModel):
     【使用顺序】
     1. Java 端检测到某会话对话数 >= 阈值
     2. 从数据库取出该会话的全部对话
-    3. 组装 MemoryConsolidateRequest
+    3. 组装 MemoryIntegrationParametersVO
     4. 调用 Python AI 服务生成摘要
     5. Java 端存储摘要、清空原始对话
 
-    【字段说明】
-    - session_id: 会话ID
-    - conversations: 待整理的对话列表（至少1条）
-
-    【Java 对应类】
-    ```java
-    public class MemoryConsolidateRequest {
-        String sessionId;
-        List<ConversationItem> conversations;
-    }
-    ```
+    【Java 对应类】ai.weixiu.pojo.vo.MemoryIntegrationParametersVO
     """
-    session_id: str = Field(..., description="会话ID")
-    conversations: List[ConversationItem] = Field(..., min_length=1, description="待整理的对话列表")
-    old_preferences: List[Dict[str, str]] = Field(default_factory=list, description="已有的偏好列表（用于冲突合并）")
-    old_unresolved: List[Dict[str, str]] = Field(default_factory=list, description="已有的未完成事项列表（用于判断是否解决）")
+    session_id: str = Field(..., validation_alias="sessionId", description="会话ID")
+    memoryMessages: List[MemoryMessage] = Field(..., min_length=1, description="待整理的对话列表")
+    memoryPreferenceVOList: List[MemoryPreferenceVO] = Field(default_factory=list, description="已有的偏好列表（用于冲突合并）")
+    memoryUnresolvedVOList: List[MemoryUnresolvedVO] = Field(default_factory=list, description="已有的未完成事项列表（用于判断是否解决）")

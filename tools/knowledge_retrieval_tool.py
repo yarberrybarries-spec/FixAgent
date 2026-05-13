@@ -42,6 +42,32 @@ class KnowledgeRetrievalTool(BaseTool):
             "适用场景：用户询问设备知识、故障原因、维修方法等需要查资料的情况。"
         )
 
+    def get_parameters_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "检索查询文本（自然语言描述）"
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "返回文档数量，默认5",
+                    "default": 5
+                },
+                "category": {
+                    "type": "string",
+                    "description": "分类过滤，如 motor/pump/bearing 等"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "标签过滤，如 ['bearing', 'overheat']，OR语义"
+                }
+            },
+            "required": ["query"]
+        }
+
     @staticmethod
     def _build_filter(category: str = None, tags: List[str] = None) -> Optional[str]:
         """

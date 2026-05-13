@@ -700,19 +700,21 @@ class FactSummary(BaseModel):
     """事实摘要子模型"""
     content: str = Field(description="事实描述")
     keywords: str = Field(default="", description="检索用关键词")
-    source_seq_range: str = Field(default="", description="来源对话序号范围")
+    source_seq_range: str = Field(default="", serialization_alias="sourceSeqRange", description="来源对话序号范围")
 
 
 class PreferenceSummary(BaseModel):
     """偏好摘要子模型"""
     content: str = Field(description="偏好描述")
     category: str = Field(default="其他", description="分类: 交互风格|格式要求|工作习惯|关注领域|其他")
+    preferenceCategory: int = Field(default=1, description="偏好类型: 0=用户级(所有对话公用), 1=会话级(单次会话公用)")
 
 
 class UnresolvedSummary(BaseModel):
     """未完成事项子模型"""
     content: str = Field(description="待解决描述")
     type: str = Field(default="待办", description="类型: 未答复问题|进行中任务|用户待办")
+    status: str = Field(default="active", description="状态: active=进行中, superseded=已放弃")
 
 
 class MemorySummary(BaseModel):
@@ -730,12 +732,12 @@ class MemorySummary(BaseModel):
     - resolved_items: 本次解决的事项（从未完成列表中移除）
     - brief_summary: 200字以内的整体摘要
     """
-    new_facts: List[FactSummary] = Field(default_factory=list, description="新增事实列表")
-    superseded_ids: List[str] = Field(default_factory=list, description="被覆盖的旧事实ID")
-    updated_preferences: List[PreferenceSummary] = Field(default_factory=list, description="更新后的偏好列表")
-    updated_unresolved: List[UnresolvedSummary] = Field(default_factory=list, description="更新后的未完成事项")
-    resolved_items: List[str] = Field(default_factory=list, description="已解决的事项描述")
-    brief_summary: str = Field(default="", description="200字以内的整体摘要")
+    new_facts: List[FactSummary] = Field(default_factory=list, serialization_alias="newFacts", description="新增事实列表")
+    superseded_ids: List[str] = Field(default_factory=list, serialization_alias="supersededIds", description="被覆盖的旧事实ID")
+    updated_preferences: List[PreferenceSummary] = Field(default_factory=list, serialization_alias="updatedPreferences", description="更新后的偏好列表")
+    updated_unresolved: List[UnresolvedSummary] = Field(default_factory=list, serialization_alias="updatedUnresolved", description="更新后的未完成事项")
+    resolved_items: List[str] = Field(default_factory=list, serialization_alias="resolvedItems", description="已解决的事项描述")
+    brief_summary: str = Field(default="", serialization_alias="briefSummary", description="200字以内的整体摘要")
 
 
 class MemoryConsolidateResponse(BaseResponse):
@@ -761,7 +763,7 @@ class MemoryConsolidateResponse(BaseResponse):
     }
     ```
     """
-    session_id: str = Field(..., description="会话ID")
+    session_id: str = Field(..., serialization_alias="sessionId", description="会话ID")
     summary: MemorySummary = Field(..., description="整理后的记忆摘要")
-    original_count: int = Field(..., description="原始对话条数")
-    consolidated_at: str = Field(..., description="整理时间")
+    original_count: int = Field(..., serialization_alias="originalCount", description="原始对话条数")
+    consolidated_at: str = Field(..., serialization_alias="consolidatedAt", description="整理时间")

@@ -118,6 +118,34 @@ class BaseTool(ABC):
         """
         pass
 
+    def get_parameters_schema(self) -> dict:
+        """
+        返回工具参数的 JSON Schema，供 LLM function calling 使用
+
+        子类覆盖此方法以声明参数格式。默认返回空 schema（无参数工具）。
+        """
+        return {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+
+    def to_openai_schema(self) -> dict:
+        """
+        返回 OpenAI function calling 格式的工具定义
+
+        供 BaseAgent.run_with_react() 使用，将工具列表转为 LLM 可识别的格式。
+        子类可覆盖此方法（如 FactRetrievalTool）以提供完整自定义 schema。
+        """
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.get_parameters_schema()
+            }
+        }
+
     async def run(self, **kwargs) -> ToolResult:
         """
         模板方法：统一执行入口

@@ -39,8 +39,8 @@ class FactRetrievalTool(BaseTool):
             "返回每条关键词对应的 Top-3 相似事实。"
         )
 
-    def get_openai_tool_def(self) -> dict:
-        """返回 OpenAI function calling 格式的工具定义"""
+    def to_openai_schema(self) -> dict:
+        """返回 OpenAI function calling 格式的工具定义（覆盖基类以提供完整参数schema）"""
         return {
             "type": "function",
             "function": {

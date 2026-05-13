@@ -258,6 +258,29 @@ class KnowledgeUploadRequest(BaseModel):
     category: Optional[str] = Field(default=None, description="分类")
 
 
+class KnowledgeImportRequest(BaseModel):
+    """
+    知识导入请求（文档解析 + 向量化入库）
+
+    【功能关联】POST /ai/knowledge/import
+    【何时用】Java 后端上传维修手册 PDF 等文档，一键解析并入库
+
+    【使用顺序】
+    1. Java 后端在部署初始化时拿到赛题 PDF
+    2. 调用本接口，传入文件路径/URL
+    3. Python 端解析 PDF → 向量化 → 存入 Redis 向量库
+    4. 返回导入统计
+
+    【与 KnowledgeUploadRequest 的区别】
+    - Upload: 仅定义上传参数，未实现
+    - Import: 编排完整的 解析→向量化→入库 管道
+    """
+    file_url: str = Field(..., description="文档路径或URL")
+    file_type: str = Field(default="pdf", description="文件类型，目前仅支持 pdf")
+    category: Optional[str] = Field(default=None, description="全局分类标签，覆盖章节自动分类")
+    tags: Optional[List[str]] = Field(default=None, description="标签列表，用于过滤检索")
+
+
 # ==================== 案例相关 ====================
 
 class CaseCreateRequest(BaseModel):

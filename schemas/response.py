@@ -262,6 +262,33 @@ class KnowledgeSearchResponse(BaseResponse):
     query_time_ms: int
 
 
+class KnowledgeImportResponse(BaseResponse):
+    """
+    知识导入响应
+
+    【功能关联】POST /ai/knowledge/import
+    【何时用】文档解析并入库完成后，返回导入统计
+
+    【字段说明】
+    - file_name: 文档文件名
+    - total_pages: PDF 总页数
+    - text_count: 入库文本块数量
+    - image_count: 入库图片数量（用图注向量化）
+    - table_count: 入库表格数量
+    - sections: 各章节统计摘要
+    - extraction_summary: DocumentParserTool 的提取摘要
+    - process_time_ms: 总耗时
+    """
+    file_name: str
+    total_pages: int
+    text_count: int
+    image_count: int
+    table_count: int
+    sections: List[dict]
+    extraction_summary: dict
+    process_time_ms: int
+
+
 # ==================== 案例相关 ====================
 
 class CaseItem(BaseModel):

@@ -4,8 +4,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
-from schemas.request import ChatRequest, KnowledgeSearchRequest, MemoryConsolidateRequest
-from schemas.response import ChatResponse, KnowledgeSearchResponse, BaseResponse, MemoryConsolidateResponse
+from schemas.request import ChatRequest, KnowledgeImportRequest, KnowledgeSearchRequest, MemoryConsolidateRequest
+from schemas.response import ChatResponse, KnowledgeImportResponse, KnowledgeSearchResponse, BaseResponse, MemoryConsolidateResponse
 from agents.orchestrator_agent import get_orchestrator_agent
 from agents.memory_agent import get_memory_agent
 from agents.base_agent import AgentInput
@@ -146,6 +146,52 @@ async def pipeline(request: ChatRequest) -> ChatResponse:
     try:
         pass
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+"""知识导入"""
+@app.post("/ai/knowledge/import", response_model=KnowledgeImportResponse)
+async def knowledge_import(request: KnowledgeImportRequest) -> KnowledgeImportResponse:
+    """
+    文档导入并入库：解析 PDF → 向量化 → 存入 Redis 向量库
+
+    使用场景：
+    1. 系统部署初始化时，Java 后端上传赛题提供的维修手册 PDF
+    2. 后续运营中导入新的技术文档
+
+    处理流程：
+    DocumentParserTool 解析 → TextEmbedding 向量化 → VectorService 入库
+    文本块直接向量化，表格转为 markdown 文本向量化，图片用图注文本向量化。
+    """
+    from services.knowledge_service import get_knowledge_service
+
+    try:
+        svc = get_knowledge_service()
+        result = await svc.import_document(
+            file_url=request.file_url,
+            file_type=request.file_type,
+            category=request.category,
+            tags=request.tags
+        )
+        logger.info(f"[knowledge_import] file={result['file_name']} "
+                    f"pages={result['total_pages']} "
+                    f"text={result['text_count']} img={result['image_count']} tbl={result['table_count']} "
+                    f"latency={result['process_time_ms']}ms")
+        return KnowledgeImportResponse(
+            success=True,
+            message=f"导入完成：{result['file_name']}，共 {result['total_pages']} 页",
+            code=200,
+            file_name=result["file_name"],
+            total_pages=result["total_pages"],
+            text_count=result["text_count"],
+            image_count=result["image_count"],
+            table_count=result["table_count"],
+            sections=result["sections"],
+            extraction_summary=result["extraction_summary"],
+            process_time_ms=result["process_time_ms"]
+        )
+    except Exception as e:
+        logger.exception(f"[knowledge_import] error")
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -1,8 +1,10 @@
+import json
+import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List
-import json
+from datetime import datetime
 from schemas.request import ChatRequest, KnowledgeSearchRequest, MemoryConsolidateRequest
 from schemas.response import ChatResponse, KnowledgeSearchResponse, BaseResponse, MemoryConsolidateResponse
 from schemas.models import AgentMode
@@ -10,8 +12,14 @@ from agents.orchestrator_agent import get_orchestrator_agent
 from agents.memory_agent import get_memory_agent
 from agents.base_agent import AgentInput
 
-# Agent 惰性初始化（首次请求时创建，避免启动时加载模型）
-_orchestrator = None
+logger = logging.getLogger(__name__)
+
+# 全局日志配置（项目级别唯一一处）
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 
 
 def _get_orchestrator():
@@ -49,12 +57,14 @@ async def chat(request: ChatRequest) -> ChatResponse:
     3. 按模式路由到子Agent处理（开发中的模式返回提示信息）
     """
     try:
+        logger.info(f"[chat] session={request.session_id} mode={request.mode.value} msg_len={len(request.message)}")
         result = await _get_orchestrator().run_with_context(
             user_message=request.message,
             session_id=request.session_id,
             images=request.images,
             context={"mode": request.mode.value}
         )
+        logger.info(f"[chat] session={request.session_id} done latency={result.latency_ms}ms")
         return ChatResponse(
             session_id=request.session_id,
             message=result.message,
@@ -63,6 +73,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             latency_ms=result.latency_ms
         )
     except Exception as e:
+        logger.exception(f"[chat] session={request.session_id} error")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -176,11 +187,14 @@ async def memory_consolidate(request: MemoryConsolidateRequest) -> MemoryConsoli
             }
         )
 
+        logger.info(f"[memory_consolidate] session={request.session_id} msg_count={len(request.memoryMessages)}")
         result = await get_memory_agent().run(agent_input)
+        logger.info(f"[memory_consolidate] session={request.session_id} done latency={result.latency_ms}ms")
 
         if result.metadata.get("status") == "error":
             error_type = result.metadata.get("error_type", "UnknownError")
             error_detail = result.metadata.get("error_detail", "记忆整理失败")
+            logger.error(f"[memory_consolidate] session={request.session_id} agent_error=[{error_type}] {error_detail}")
             raise HTTPException(status_code=500, detail=f"[{error_type}] {error_detail}")
 
         return MemoryConsolidateResponse(

@@ -1,8 +1,11 @@
 import json
 import time
+import logging
 import httpx
 from typing import AsyncIterator, Optional, List, Dict, Any, Callable, Awaitable
 from config.settings import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class LLMService:
@@ -67,6 +70,7 @@ class LLMService:
             "Content-Type": "application/json"
         }
 
+        logger.debug(f"[llm] chat call model={self.model} stream={stream} msg_count={len(messages)}")
         if stream:
             return self._stream_chat(self.client, headers, params)
         else:
@@ -209,6 +213,7 @@ class LLMService:
                     "duration_ms": step_duration_ms
                 })
                 response["trace"] = trace
+                logger.info(f"[llm] chat_with_tools finished iterations={i+1} total_duration_ms={step_duration_ms}")
                 return response
 
             # 收集本轮工具调用详情

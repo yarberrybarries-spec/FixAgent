@@ -17,10 +17,13 @@ Agent ReAct → GraphQueryTool._execute() → GraphService → Neo4j Cypher → 
 """
 
 from typing import List, Optional
+import logging
 from pydantic import BaseModel, Field
 
 from tools.base_tool import BaseTool, ToolException
 from services.graph_service import get_graph_service, DiagnosisPath, DeviceInfo
+
+logger = logging.getLogger(__name__)
 
 
 class DiagnosisPathResult(BaseModel):

@@ -14,9 +14,12 @@ LLM tool_call → _execute(queries) → VectorService.search_by_text() → 返�
 """
 
 import asyncio
+import logging
 from typing import List, Optional
 
 from tools.base_tool import BaseTool
+
+logger = logging.getLogger(__name__)
 
 
 class FactRetrievalTool(BaseTool):

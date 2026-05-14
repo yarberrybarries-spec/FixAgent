@@ -15,11 +15,14 @@ query → TextEmbedding.embed() → 1024维向量
 """
 
 from typing import List, Optional
+import logging
 
 from tools.base_tool import BaseTool, ToolException
 from embeddings.text_embedding import get_text_embedding
 from services.vector_service import get_vector_service
 from schemas.models import VectorSearchResult
+
+logger = logging.getLogger(__name__)
 
 
 class KnowledgeRetrievalTool(BaseTool):

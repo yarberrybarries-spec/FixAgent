@@ -16,6 +16,7 @@ Agent基类模块
 
 import time
 import asyncio
+import logging
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, AsyncIterator
 from datetime import datetime
@@ -23,6 +24,8 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from services.llm_service import LLMService
+
+logger = logging.getLogger(__name__)
 
 
 class AgentInput(BaseModel):

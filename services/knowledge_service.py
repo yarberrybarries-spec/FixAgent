@@ -14,11 +14,14 @@
 
 import time
 import hashlib
+import logging
 from typing import List, Optional
 
 from tools.document_tool import get_document_parser
 from embeddings.text_embedding import get_text_embedding
 from services.vector_service import get_vector_service
+
+logger = logging.getLogger(__name__)
 
 
 class KnowledgeService:

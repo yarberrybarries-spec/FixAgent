@@ -17,8 +17,11 @@ GuidanceAgent — 维修作业指引Agent（ReAct模式）
 """
 
 from typing import List
+import logging
 
 from agents.base_agent import BaseAgent
+
+logger = logging.getLogger(__name__)
 
 
 class GuidanceAgent(BaseAgent):

@@ -5,7 +5,11 @@
 关键词覆盖设备维修领域的常见表达。
 """
 
+import logging
+
 from schemas.models import IntentionType, IntentionResult
+
+logger = logging.getLogger(__name__)
 
 
 # 意图关键词映射（设备维修领域扩展）

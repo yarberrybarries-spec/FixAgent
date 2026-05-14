@@ -18,6 +18,10 @@
 - RECORDED: CaseRecord -> Fault（案例记录了故障）
 """
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 import uuid
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field

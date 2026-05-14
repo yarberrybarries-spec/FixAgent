@@ -18,12 +18,16 @@ OrchestratorAgent — 调度中枢
 """
 
 import time
+import asyncio
+import logging
 from collections.abc import AsyncIterator
 
 from agents.base_agent import BaseAgent, AgentInput, AgentOutput
 from agents.intention.recognizer import get_intention_recognizer
 from schemas.models import AgentMode, IntentionType, IntentionResult
 from services.llm_service import LLMService
+
+logger = logging.getLogger(__name__)
 
 
 def _map_intention_to_mode(intention: IntentionType) -> AgentMode:
@@ -163,12 +167,19 @@ class OrchestratorAgent(BaseAgent):
                 latency_ms=latency_ms
             )
 
-    async def run_stream(self, input_data: AgentInput) -> AsyncIterator[str]:
+    async def run_stream(self, input_data: AgentInput) -> AsyncIterator:
         """
         流式执行入口，覆盖父类方法
 
-        CHAT模式：流式输出LLM生成的token
-        其他模式：TODO 子Agent实现流式接口后接入
+        CHAT: 真实 LLM 流式输出 token
+        RETRIEVAL/DIAGNOSIS/GUIDANCE: 委托子 Agent 的 ReAct 流式
+        FULL: 三阶段管道，每阶段跑 ReAct 后流式输出汇总结果
+
+        返回格式统一为 dict 事件（兼容 SSE）：
+        - {"event": "token", "data": {"content": "..."}}
+        - {"event": "status", "data": {"stage": "..."}}
+        - {"event": "tool", "data": {"tool": "..."}}
+        - {"event": "done", "data": {}}
         """
         user_mode = self._resolve_mode(input_data)
 
@@ -182,18 +193,45 @@ class OrchestratorAgent(BaseAgent):
         else:
             effective_mode = user_mode
 
-        # 流式路由
+        # ── CHAT: 真实 LLM 流式 ──
         if effective_mode == AgentMode.CHAT:
             messages = self._build_messages(input_data)
             stream_iter = await self._call_llm(messages, stream=True)
             async for token in stream_iter:
-                yield token
-        else:
-            # TODO: 子Agent实现 run_stream() 后，改为调用对应子Agent的流式方法
-            # 例：if effective_mode == AgentMode.RETRIEVAL:
-            #         async for token in self.retrieval_agent.run_stream(input_data):
-            #             yield token
-            yield f"[{effective_mode.value}] 模式正在开发中，当前仅支持对话模式。请使用 mode=chat 或直接对话。"
+                yield {"event": "token", "data": {"content": token}}
+            yield {"event": "done", "data": {}}
+            return
+
+        # ── RETRIEVAL ──
+        if effective_mode == AgentMode.RETRIEVAL and self.retrieval_agent is not None:
+            async for event in self.retrieval_agent.run_with_react_stream(input_data):
+                yield event
+            return
+
+        # ── DIAGNOSIS ──
+        if effective_mode == AgentMode.DIAGNOSIS and self.diagnosis_agent is not None:
+            async for event in self.diagnosis_agent.run_with_react_stream(input_data):
+                yield event
+            return
+
+        # ── GUIDANCE ──
+        if effective_mode == AgentMode.GUIDANCE and self.guidance_agent is not None:
+            async for event in self.guidance_agent.run_with_react_stream(input_data):
+                yield event
+            return
+
+        # ── FULL: 检索 → 诊断 → 指引 ──
+        if effective_mode == AgentMode.FULL:
+            async for event in self._run_full_pipeline_stream(input_data):
+                yield event
+            return
+
+        # ── 降级 ──
+        yield {"event": "status", "data": {"stage": f"{effective_mode.value} 模式暂不可用"}}
+        msg = f"[{effective_mode.value}] 模式正在开发中，当前仅支持对话模式。"
+        for ch in msg:
+            yield {"event": "token", "data": {"content": ch}}
+        yield {"event": "done", "data": {}}
 
     # ==================== 内部方法 ====================
 
@@ -333,6 +371,69 @@ class OrchestratorAgent(BaseAgent):
             tools_used=[],
             metadata={"mode": AgentMode.GUIDANCE.value, "status": "not_implemented"}
         )
+
+    async def _run_full_pipeline_stream(
+        self,
+        input_data: AgentInput
+    ) -> AsyncIterator[dict]:
+        """
+        FULL 模式流式 —— 三阶段串行执行，每阶段操作结束后流式输出结果。
+
+        阶段：
+        1. 检索 → yield 检索结果 token
+        2. 诊断（携带检索上下文）→ yield 诊断结果 token
+        3. 指引（携带检索+诊断上下文）→ yield 指引结果 token
+        4. 汇总 done 事件
+        """
+        context = dict(input_data.context or {})
+
+        # ── Step 1: 检索 ──
+        yield {"event": "status", "data": {"stage": "第一步：检索相关知识"}}
+        if self.retrieval_agent is not None:
+            retrieval_output = await self.retrieval_agent.run_with_react(input_data)
+            context["retrieval_result"] = retrieval_output.message
+        else:
+            context["retrieval_result"] = "（检索Agent尚未注入，跳过）"
+        yield {"event": "tool", "data": {"tool": "knowledge_retrieval"}}
+        for ch in context["retrieval_result"]:
+            yield {"event": "token", "data": {"content": ch}}
+            if len(context["retrieval_result"]) > 50 and ord(ch) > 127:
+                await asyncio.sleep(0)
+
+        # ── Step 2: 诊断 ──
+        yield {"event": "status", "data": {"stage": "第二步：故障诊断分析"}}
+        if self.diagnosis_agent is not None:
+            diagnosis_input = AgentInput(
+                user_message=input_data.user_message,
+                session_id=input_data.session_id,
+                images=input_data.images,
+                context=context
+            )
+            diagnosis_output = await self.diagnosis_agent.run_with_react(diagnosis_input)
+            context["diagnosis_result"] = diagnosis_output.message
+        else:
+            context["diagnosis_result"] = "（诊断Agent尚未注入，跳过）"
+        yield {"event": "tool", "data": {"tool": "graph_query_diagnosis_path"}}
+        for ch in f"\n\n{context['diagnosis_result']}":
+            yield {"event": "token", "data": {"content": ch}}
+
+        # ── Step 3: 指引 ──
+        yield {"event": "status", "data": {"stage": "第三步：生成维修作业指引"}}
+        if self.guidance_agent is not None:
+            guidance_input = AgentInput(
+                user_message=input_data.user_message,
+                session_id=input_data.session_id,
+                images=input_data.images,
+                context=context
+            )
+            guidance_output = await self.guidance_agent.run_with_react(guidance_input)
+            context["guidance_result"] = guidance_output.message
+        else:
+            context["guidance_result"] = "（指引Agent尚未注入，跳过）"
+        for ch in f"\n\n{context['guidance_result']}":
+            yield {"event": "token", "data": {"content": ch}}
+
+        yield {"event": "done", "data": {}}
 
     async def _execute_full_pipeline(
         self,

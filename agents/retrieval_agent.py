@@ -16,8 +16,11 @@ RetrievalAgent — 知识检索Agent（ReAct模式）
 """
 
 from typing import List
+import logging
 
 from agents.base_agent import BaseAgent
+
+logger = logging.getLogger(__name__)
 
 
 class RetrievalAgent(BaseAgent):

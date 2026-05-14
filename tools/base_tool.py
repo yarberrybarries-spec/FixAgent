@@ -26,8 +26,11 @@
 
 from abc import ABC, abstractmethod
 from typing import Any, Optional
+import logging
 
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 
 class ToolError(BaseModel):

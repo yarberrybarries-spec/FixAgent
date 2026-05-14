@@ -38,11 +38,14 @@ import os
 import re
 import hashlib
 import asyncio
+import logging
 from typing import List, Optional
 
 import httpx
 
 from tools.base_tool import BaseTool, ToolException
+
+logger = logging.getLogger(__name__)
 
 
 class DocumentParserTool(BaseTool):

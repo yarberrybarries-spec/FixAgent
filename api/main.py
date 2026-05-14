@@ -97,10 +97,13 @@ async def chat_stream(request: ChatRequest):
 
         yield f"data: {json.dumps({'event': 'session_id', 'data': {'session_id': request.session_id}})}\n\n"
 
-        async for token in orchestrator.run_stream(input_data):
-            yield f"data: {json.dumps({'event': 'token', 'data': {'content': token}})}\n\n"
-
-        yield f"data: {json.dumps({'event': 'done', 'data': {}})}\n\n"
+        try:
+            async for event in orchestrator.run_stream(input_data):
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as e:
+            logger.exception(f"[chat_stream] session={request.session_id} error")
+            yield f"data: {json.dumps({'event': 'error', 'data': {'message': str(e)}})}\n\n"
+            yield f"data: {json.dumps({'event': 'done', 'data': {}})}\n\n"
 
     return StreamingResponse(
         event_generator(),

@@ -66,6 +66,10 @@ MEMORY_SYSTEM_PROMPT = """你是工作记忆整理助手。从对话记录中提
    ✓ "用户使用 MySQL 作为数据库"
 3. 时效标注：如果事实可能随时间改变，加上时间标记
    ✓ "用户当前正在调试登录模块的bug（2026-05）"
+4. **重要度判断（宁缺毋滥！）** — 只记录有长期价值的事实：
+   ✓ 值得记录：设备型号、技术架构、项目名称、确认的结论
+   ✗ 不要记录：当前正在调试的临时状态、对话中的过渡性表述、用户的随口一提
+   判断标准：**如果这条信息在下周还有用，就记录；如果只在今天有用，就不记录**
 
 ### 偏好（用户主动表达的主观倾向，需要严格区分）
 
@@ -130,6 +134,16 @@ MEMORY_SYSTEM_PROMPT = """你是工作记忆整理助手。从对话记录中提
   - preferenceCategory: 0=用户级（所有对话公用）, 1=会话级（仅本次会话有效）
   - status: active=进行中, superseded=已放弃。已放弃的事项无需处理
   - id: 数据库主键，用于精确标记已解决的事项
+
+## 提取质量门控（最终检查清单）
+输出前，请逐条检查每个提取的条目：
+1. ✅ 这条信息是从【用户】发言中提取的吗？（如果是从助手发言推断的 → 删除）
+2. ✅ 如果是事实：下周还有参考价值吗？（如果只是当前调试的临时状态 → 删除）
+3. ✅ 如果是待办：用户是否亲口说了"我要做/打算做"？（如果是助手建议的 → 删除）
+4. ✅ 如果是偏好：是持久性的还是一次性的？（"这次用英文" ≠ 永久偏好 → 删除）
+
+**宁缺毋滥原则：** 如果不确定是否应该提取，就不要提取。
+错误记忆比没有记忆危害更大。空的 new_facts/updated_preferences/updated_unresolved 是完全正常的。
 
 ## 摘要要求
 brief_summary 是导航索引，不是信息源。100字以内，只需概括"这段对话聊了什么话题"。
@@ -281,17 +295,17 @@ class MemoryAgent(BaseAgent):
 
     async def _store_facts_to_vector(self, facts: list[dict], session_id: str):
         """
-        将提取的事实写入 Redis 向量库
+        将提取的事实写入 Redis 向量库（带去重保护）
 
-        每条事实生成向量后存入 Redis，供后续 MemoryAgent 整理时做冲突检索。
-        存入的向量与知识库共用同一索引，通过 metadata.type="fact" 区分。
+        写入前先做向量相似度检查：如果已存在高度相似（score < 0.15）的事实，
+        则跳过写入，避免重复存储。这是整合时tool检索之外的第二道防线。
 
         Args:
             facts: LLM 输出的 new_facts 列表 [{"content": "", "keywords": "", "source_seq_range": ""}]
             session_id: 会话ID，用于 doc_id 前缀
 
         Returns:
-            生成的 doc_id 列表，与 facts 一一对应（失败的跳过，返回空字符串占位）
+            生成的 doc_id 列表，与 facts 一一对应（跳过或失败的返回空字符串占位）
         """
         if not facts:
             return []
@@ -315,6 +329,24 @@ class MemoryAgent(BaseAgent):
                 generated_ids.append("")
                 continue
 
+            # ===== 去重保护：写入前检查是否已存在高度相似的事实 =====
+            try:
+                existing = vector_service.search(vector, top_k=1)
+                if existing:
+                    top_match = existing[0]
+                    top_meta = top_match.get("metadata", {})
+                    # COSINE距离 < 0.15 表示几乎相同的事实已存在
+                    if top_meta.get("type") == "fact" and top_match.get("score", 1) < 0.15:
+                        logger.info(
+                            f"[memory] 去重跳过: '{content[:40]}' 与已有事实相似度过高 "
+                            f"(score={top_match.get('score', 0):.3f})"
+                        )
+                        # 返回已存在的doc_id，这样Java端也能正确对应
+                        generated_ids.append(top_match.get("doc_id", ""))
+                        continue
+            except Exception:
+                pass  # 去重检查失败不影响正常写入
+
             doc_id = f"fact:{session_id}:{batch_ts}_{i}"
 
             vector_service.add_vector(
@@ -325,7 +357,8 @@ class MemoryAgent(BaseAgent):
                     "type": "fact",
                     "session_id": session_id,
                     "keywords": keywords,
-                    "source_seq_range": fact.get("source_seq_range", "")
+                    "source_seq_range": fact.get("source_seq_range", ""),
+                    "created_at": batch_ts  # 记录创建时间，供未来衰减/清理使用
                 }
             )
             generated_ids.append(doc_id)

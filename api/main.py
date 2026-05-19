@@ -668,6 +668,12 @@ class TextMultimodalEmbeddingRequest(BaseModel):
     text: str
 
 
+class MultimodalFusionRequest(BaseModel):
+    """多模态融合向量化请求体 — 文字+图片混合输入，输出单个融合向量"""
+    text: str = ""
+    image_urls: List[str] = []
+
+
 @app.post("/ai/embedding/image")
 async def image_embedding(request: ImageEmbeddingRequest):
     """
@@ -727,6 +733,81 @@ async def text_multimodal_embedding(request: TextMultimodalEmbeddingRequest):
         return {"vector": vector, "dimension": dimension}
     except Exception as e:
         logger.exception("[text_multimodal_embedding] error")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/ai/embedding/multimodal")
+async def multimodal_fusion_embedding(request: MultimodalFusionRequest):
+    """
+    多模态融合向量化接口
+
+    将文字描述和图片 URL 融合为单个向量。
+    因百炼 API 限制（input 数组元素类型必须一致），
+    分两次调用再加权平均：
+      1. text → multimodal-embedding-v1（input: [{"text": ...}]）→ text_vec
+      2. images → multimodal-embedding-v1（input: [{"image": ...}, ...]）→ 取平均 → img_vec
+      3. 加权融合：text_weight * text_vec + img_weight * img_vec
+
+    权重策略：
+      - 同时有文字和图片：text_weight=0.3, img_weight=0.7
+      - 只有文字：text_weight=1.0
+      - 只有图片：img_weight=1.0
+
+    Returns:
+        {"vector": [...], "dimension": 1024, "has_text": true, "has_image": true}
+    """
+    if not request.text and not request.image_urls:
+        raise HTTPException(status_code=400, detail="至少需要提供 text 或 image_urls")
+
+    try:
+        svc = get_image_embedding()  # 复用 multimodal-embedding-v1 的 client
+        headers = {
+            "Authorization": f"Bearer {svc.api_key}",
+            "Content-Type": "application/json"
+        }
+
+        text_vec = None
+        img_vec = None
+
+        # 1. 文字向量化（用 multimodal-embedding-v1，不是 text-embedding-v4）
+        if request.text:
+            params = {"model": svc.model, "input": [{"text": request.text}]}
+            resp = await svc.client.post(f"{svc.api_base}/embeddings", headers=headers, json=params)
+            resp.raise_for_status()
+            data = resp.json()
+            if "data" in data and data["data"]:
+                text_vec = data["data"][0]["embedding"]
+
+        # 2. 图片向量化
+        if request.image_urls:
+            vectors = await svc.embed_batch(request.image_urls)
+            if vectors:
+                # 多张图取平均
+                dim = len(vectors[0])
+                img_vec = [sum(v[i] for v in vectors) / len(vectors) for i in range(dim)]
+
+        # 3. 加权融合
+        if text_vec and img_vec:
+            text_w, img_w = 0.3, 0.7
+            fused = [text_w * t + img_w * g for t, g in zip(text_vec, img_vec)]
+        elif text_vec:
+            fused = text_vec
+        elif img_vec:
+            fused = img_vec
+        else:
+            raise ValueError("向量化失败：text 和 image 均未产生向量")
+
+        logger.info(f"[multimodal_fusion] text={bool(request.text)} images={len(request.image_urls)} dim={len(fused)}")
+        return {
+            "vector": fused,
+            "dimension": len(fused),
+            "has_text": text_vec is not None,
+            "has_image": img_vec is not None
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("[multimodal_fusion] error")
         raise HTTPException(status_code=500, detail=str(e))
 
 

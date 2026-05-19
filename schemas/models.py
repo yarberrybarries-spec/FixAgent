@@ -26,7 +26,7 @@ Schemas基础模型模块
 
 from enum import Enum
 from typing import List, Any, Dict
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 # ==================== 枚举类型 ====================
@@ -246,14 +246,13 @@ class BaseResponse(BaseModel):
     message: str = "操作成功"
     code: int = 200
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "success": True,
-                "message": "操作成功",
-                "code": 200
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "success": True,
+            "message": "操作成功",
+            "code": 200
         }
+    })
 
 
 class ErrorResponse(BaseResponse):
@@ -295,14 +294,13 @@ class ErrorResponse(BaseResponse):
     message: str = "操作失败"
     code: int = 500
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "success": False,
-                "message": "参数错误",
-                "code": 400
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "success": False,
+            "message": "参数错误",
+            "code": 400
         }
+    })
 
 
 class PaginationMeta(BaseModel):

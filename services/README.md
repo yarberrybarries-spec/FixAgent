@@ -59,8 +59,15 @@ results = await vector_service.search_by_text("电动机轴承过热", top_k=5)
 ## GraphService — 核心接口
 
 ```python
-# 查询诊断路径（Device → Component → Fault → Solution）
-paths = graph_service.query_diagnosis_path(keyword="轴承过热", limit=10)
+# 查询诊断路径（设备 → 部件 → 故障 → 解决方案，5分支策略 + 向量匹配）
+result = graph_service.find_diagnosis_paths(
+    keyword="电动机",
+    component_ids=["comp_001"],
+    fault_ids=["fault_001"],
+    component_score_map={"comp_001": 0.92},
+    fault_score_map={"fault_001": 0.88},
+    page=0, size=5
+)
 
 # 设备搜索
 devices = graph_service.find_devices(keyword="电动机", limit=10)
@@ -73,6 +80,10 @@ faults = graph_service.find_faults_by_component(component_id, limit=10)
 
 # 按故障查解决方案
 solutions = graph_service.find_solutions_by_fault(fault_id, verified_only=True)
+
+# Neo4j 向量索引检索（需预先建索引）
+components = graph_service.search_components_by_embedding(embedding, limit=20, min_score=0.50)
+faults = graph_service.search_faults_by_embedding(embedding, limit=20, min_score=0.80)
 ```
 
 ## KnowledgeService — 核心接口
@@ -109,7 +120,7 @@ services/
 ├── __init__.py
 ├── llm_service.py              # LLM 调用（chat / chat_with_tools / ReAct trace）
 ├── vector_service.py           # Redis 向量库（search / add_vector / add_vector_batch）
-├── graph_service.py            # Neo4j 图数据库（query_diagnosis_path / find_* 只读查询）
+├── graph_service.py            # Neo4j 图数据库（find_diagnosis_paths 5分支 / find_* 只读查询 / 向量索引检索）
 └── knowledge_service.py        # 文档导入编排（import_document: 解析→向量化→入库）
 ```
 

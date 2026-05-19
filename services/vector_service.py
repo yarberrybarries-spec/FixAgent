@@ -15,6 +15,28 @@ from config.settings import get_settings
 logger = logging.getLogger(__name__)
 
 
+def build_redis_filter(category: str = None, tags: List[str] = None) -> Optional[str]:
+    """构建 RediSearch 过滤表达式，供 API 层和工具层复用。
+
+    Args:
+        category: 分类过滤，如 "motor"
+        tags: 标签过滤，如 ["bearing", "overheat"]
+
+    Returns:
+        RediSearch 过滤表达式，如 "@category:{motor}" 或
+        "(@category:{motor}) (@tags:{bearing|overheat})"，无过滤条件时返回 None
+    """
+    filter_parts = []
+    if category:
+        filter_parts.append(f"@category:{{{category}}}")
+    if tags:
+        tag_str = "|".join(tags)
+        filter_parts.append(f"@tags:{{{tag_str}}}")
+    if not filter_parts:
+        return None
+    return " ".join(f"({p})" for p in filter_parts)
+
+
 class VectorService:
     """
     Redis 向量数据库服务

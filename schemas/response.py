@@ -24,7 +24,7 @@ Schemas响应模型模块
 """
 
 from typing import Optional, List, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from schemas.models import (
     BaseResponse, PaginationMeta,
     DetectionResult, VectorSearchResult, GraphNode, GraphRelation
@@ -70,13 +70,12 @@ class ChatStreamEvent(BaseModel):
     event: str = Field(..., description="事件类型: token/status/tool/done/error")
     data: Any = Field(..., description="事件数据")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "event": "token",
-                "data": {"content": "维修"}
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "event": "token",
+            "data": {"content": "维修"}
         }
+    })
 
 
 class ChatResponse(BaseResponse):
@@ -126,18 +125,17 @@ class ChatResponse(BaseResponse):
     latency_ms: Optional[int] = Field(default=None, description="响应延迟(ms)")
     verification: Optional[dict] = Field(default=None, description="3层确定性校验结果")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "success": True,
-                "message": "电动机轴承过热可能由以下原因造成：1. 润滑不良...",
-                "code": 200,
-                "session_id": "sess_abc123",
-                "intention": "troubleshoot",
-                "tools_used": ["knowledge_retrieval", "graph_query"],
-                "latency_ms": 1500
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "success": True,
+            "message": "电动机轴承过热可能由以下原因造成：1. 润滑不良...",
+            "code": 200,
+            "session_id": "sess_abc123",
+            "intention": "troubleshoot",
+            "tools_used": ["knowledge_retrieval", "graph_query"],
+            "latency_ms": 1500
         }
+    })
 
 
 # ==================== 知识库相关 ====================
@@ -185,8 +183,7 @@ class KnowledgeItem(BaseModel):
     created_at: str
     updated_at: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class KnowledgeListResponse(BaseResponse):
@@ -358,8 +355,7 @@ class CaseItem(BaseModel):
     created_at: str
     updated_at: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class CaseListResponse(BaseResponse):
@@ -433,8 +429,7 @@ class DeviceItem(BaseModel):
     created_at: str
     updated_at: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DeviceListResponse(BaseResponse):

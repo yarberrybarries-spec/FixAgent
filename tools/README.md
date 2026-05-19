@@ -10,8 +10,8 @@ Tools 是 Agent 的**能力扩展层**，将外部能力封装为统一接口，
 
 | 工具 | 文件 | 描述 | 归属 Agent |
 |------|------|------|-----------|
-| `knowledge_retrieval` | knowledge_retrieval_tool.py | 知识库向量检索 | FixAgent |
-| `graph_query_diagnosis_path` | graph_query_tool.py | Neo4j 图谱诊断路径查询 | FixAgent |
+| `knowledge_retrieval` | knowledge_retrieval_tool.py | 知识库向量检索，支持图文混合 | FixAgent |
+| `graph_query_diagnosis_path` | graph_query_tool.py | Neo4j 图谱诊断路径查询（5分支+向量匹配） | FixAgent |
 | `graph_search_devices` | graph_query_tool.py | Neo4j 设备搜索 | FixAgent |
 | `search_similar_facts` | fact_retrieval_tool.py | 事实向量检索（冲突检测） | MemoryAgent |
 | `document_parser` | document_tool.py | 文档解析（PDF/Word/TXT） | 知识导入流程 |

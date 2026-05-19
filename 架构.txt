@@ -1,715 +1,697 @@
 # FixAgent AI 模块架构
 
-## 项目定位
+## 1. 项目概述
 
-**本项目是FixAgent系统的AI推理引擎，专注于设备故障诊断推理、知识检索和维修作业指引生成。**
+**本项目是 FixAgent 系统的 AI 推理引擎，专注于设备故障诊断推理、知识检索和维修作业指引生成。**
 
-> 面向第十四届中国软件杯 A1 赛题："基于多模态大模型技术的设备检修知识检索与作业系统"。
-> 目标平台：4核8GB 龙芯虚拟机（LoongArch + 麒麟OS），需轻量、高效。
-
-基础后端功能（数据持久化、业务逻辑、会话管理、文件存储）由 Java 后端统一管理，本 Python 项目仅负责 AI 推理模块。
-
-### 设计原则
-
-| 原则 | 说明 |
-|-----|------|
-| 边界清晰 | Python 只负责 AI 推理，不碰业务数据 |
-| 松耦合 | AI 模块通过 HTTP 接口与 Java 后端交互 |
-| 国产化优先 | 使用国产组件（Redis、阿里云百炼等） |
-| 性能优先 | 单 Agent 统一处理，避免多轮意图路由的额外延迟 |
-| 可追溯 | 推理过程（ReAct trace）可记录，支持审核 |
-| 轻量部署 | 不引入重型框架（如 LangGraph），原生 Python 实现 |
+- **赛题**：第十四届中国软件杯 A1 赛题——"基于多模态大模型技术的设备检修知识检索与作业系统"
+- **目标平台**：4核 8GB 龙芯虚拟机（LoongArch + 麒麟OS），需轻量、高效
+- **职责边界**：Python 只负责 AI 推理（诊断、检索、指引、记忆），业务数据管理（CRUD、文件存储、会话管理）由 Java 后端统一负责
+- **交互方式**：Java 后端通过 HTTP 调用 Python AI 模块，AI 模块通过 HTTP 调用外部服务
 
 ---
 
-## 项目结构
+## 2. 设计原则
+
+| 原则 | 说明 |
+|------|------|
+| 边界清晰 | Python 只负责 AI 推理，不碰业务数据 |
+| 松耦合 | AI 模块通过 HTTP 接口与 Java 后端交互 |
+| 单 Agent 统一处理 | FixAgent 通过 ReAct 循环自主决定工具调用，无需意图路由 |
+| 零 LLM 审核 | ReviewAgent 用 3 层确定性校验替代 LLM 自我审查 |
+| 轻量部署 | 原生 Python 实现，不引入重型框架（LangGraph 等），适配龙芯 4核 8GB |
+| 可追溯 | ReAct trace 全程可记录，支持事后审核 |
+| 单例模式 | 各服务/Agent 均采用惰性单例，首次调用时初始化 |
+
+---
+
+## 3. 项目结构
 
 ```
 FixAgent/
-├── api/                          # FastAPI Web 服务入口
+├── api/                              # FastAPI Web 服务入口
 │   ├── __init__.py
-│   └── main.py                   # API 路由定义、请求处理（含 ASR 语音识别）
+│   ├── main.py                       # API 路由定义、请求处理、SSE 流式
+│   └── README.md
 │
-├── agents/                       # Agent 实现（AI核心）
+├── agents/                           # Agent 实现（AI核心）
 │   ├── __init__.py
-│   ├── base_agent.py            # Agent 基类（ReAct/Stream/FC 模板）
-│   ├── fix_agent.py             # 统一诊断 Agent（ReAct，持有全部工具）
-│   ├── review_agent.py          # 审核 Agent（3层确定性校验，零 LLM 调用）
-│   ├── memory_agent.py          # 记忆整理 Agent（function calling）
-│   └── realtime_memory_agent.py  # 实时记忆更新 Agent
+│   ├── base_agent.py                # Agent 基类（ReAct/Stream/FC 模板）
+│   ├── fix_agent.py                 # 统一诊断 Agent（ReAct，持有全部工具）
+│   ├── review_agent.py              # 审核 Agent（3层确定性校验，零 LLM）
+│   ├── memory_agent.py              # 记忆整理 Agent（function calling）
+│   ├── realtime_memory_agent.py     # 实时记忆更新 Agent（纯判断）
+│   └── README.md
 │
-├── config/                       # 配置管理（仅AI相关）
+├── config/                           # 配置管理（仅AI相关）
 │   ├── __init__.py
-│   ├── settings.py              # 环境配置、API Keys
-│   └── asr_settings.py          # ASR 语音识别配置
+│   ├── settings.py                  # 环境配置、API Keys、数据库连接
+│   └── README.md
 │
-├── embeddings/                   # 向量化工具
+├── embeddings/                       # 向量化工具
 │   ├── __init__.py
-│   ├── text_embedding.py        # 文本向量化（百炼API text-embedding-v4）
-│   ├── image_embedding.py       # 图像向量化（百炼 multimodal-embedding-v1）
-│   └── multimodal_embedding.py  # 多模态统一向量化（门面模式聚合文本+图片）
+│   ├── text_embedding.py            # 文本向量化（qwen2.5-vl-embedding）
+│   ├── image_embedding.py           # 图像向量化（同一模型，统一语义空间）
+│   ├── multimodal_embedding.py      # 多模态统一入口（门面模式）
+│   └── README.md
 │
-├── schemas/                      # 数据模型
+├── schemas/                          # 数据模型
 │   ├── __init__.py
-│   ├── models.py                # 枚举和常量
-│   ├── request.py               # 请求模型
-│   ├── response.py              # 响应模型
-│   └── memory.py                # 记忆整理数据模型
+│   ├── models.py                    # 枚举、通用常量和基础类型
+│   ├── request.py                   # 请求模型
+│   ├── response.py                  # 响应模型
+│   ├── memory.py                    # 记忆整理内部模型
+│   └── README.md
 │
-├── services/                     # 核心服务
+├── services/                         # 核心服务
 │   ├── __init__.py
-│   ├── llm_service.py           # 大模型服务封装（阿里云百炼 qwen-plus）
-│   ├── vector_service.py        # 向量数据库服务（Redis Search）
-│   ├── graph_service.py         # 图数据库服务（Neo4j）
-│   └── knowledge_service.py     # 知识导入服务（文档解析+向量化+入库）
+│   ├── llm_service.py               # 大模型服务封装（阿里云百炼 qwen-plus）
+│   ├── vector_service.py            # 向量数据库服务（Redis Search）
+│   ├── graph_service.py             # 图数据库服务（Neo4j）
+│   ├── knowledge_service.py         # 知识导入服务（解析+向量化+入库编排）
+│   └── README.md
 │
-├── tools/                        # 工具集（全部注册到 FixAgent）
+├── tools/                            # 工具集
 │   ├── __init__.py
-│   ├── base_tool.py             # 工具基类（BaseTool / ToolResult / ToolException）
-│   ├── knowledge_retrieval_tool.py  # 知识库向量检索
-│   ├── fact_retrieval_tool.py   # 事实向量检索（MemoryAgent 专用）
-│   ├── graph_query_tool.py      # 图谱查询（诊断路径 + 设备搜索）
-│   └── document_tool.py         # 文档解析（PDF/Word/TXT）
+│   ├── base_tool.py                 # 工具基类（模板方法 + ToolResult）
+│   ├── knowledge_retrieval_tool.py  # 知识库向量检索（文本/图文混合）
+│   ├── graph_query_tool.py          # 图谱查询（诊断路径 + 设备搜索）
+│   ├── fact_retrieval_tool.py       # 事实向量检索（MemoryAgent 专用）
+│   ├── document_tool.py             # 文档解析（PDF，pdfplumber + PyMuPDF）
+│   └── README.md
 │
-├── .env                         # 环境变量
-├── requirements.txt             # 依赖列表
-└── 架构.txt                     # 本文档
+├── .env
+├── requirements.txt
+├── 架构.txt                          # 本文档
+└── 目录树.txt                        # 纯目录结构速查
 ```
 
 ---
 
-## 核心架构：FixAgent + ReviewAgent
+## 4. 系统架构
 
-### 架构选型
+### 4.1 整体架构
 
-**ReAct（Reasoning + Acting）+ 3层确定性校验管线**
+```
+┌──────────────────────────────────────────────────────────────┐
+│                      Java Backend (:8080)                     │
+│                                                              │
+│  MySQL(业务)  Neo4j(图谱)  Redis(缓存/ChatMemory)  OSS(文件) │
+│  ─────────────────────────────────────────                    │
+│  Service 层：CaseService / DeviceService / KnowledgeService   │
+│             ChatMemoryService                                 │
+└──────────────────────────────────────────────────────────────┘
+                              │ HTTP 调用
+                              ▼
+┌──────────────────────────────────────────────────────────────┐
+│                  Python AI Service (:8000)                     │
+│                                                              │
+│  api/main.py (FastAPI)                                       │
+│       │                                                      │
+│       ├── FixAgent (ReAct 统一推理)                           │
+│       │      ├── knowledge_retrieval                         │
+│       │      ├── graph_query_diagnosis_path                  │
+│       │      └── graph_search_devices                        │
+│       │                                                      │
+│       ├── ReviewAgent (3层确定性校验)                         │
+│       │      ├── 第1层: 检索依据校验（向量相似度）            │
+│       │      ├── 第2层: 图谱路径校验（Neo4j Cypher）         │
+│       │      └── 第3层: 安全规则引擎（关键词匹配）           │
+│       │                                                      │
+│       ├── MemoryAgent (记忆整理, function calling)           │
+│       └── RealtimeMemoryAgent (实时记忆更新, 纯判断)         │
+│                                                              │
+│  服务层:                                                     │
+│       ├── LLMService      → 阿里云百炼 (qwen-plus)           │
+│       ├── VectorService   → Redis Search (FT.SEARCH KNN)     │
+│       └── GraphService    → Neo4j (Cypher)                   │
+│                                                              │
+│  向量化:                                                     │
+│       ├── TextEmbedding   → qwen2.5-vl-embedding (1024d)     │
+│       ├── ImageEmbedding  → qwen2.5-vl-embedding (1024d)     │
+│       └── MultimodalEmbedding (门面聚合)                     │
+└──────────────────────────────────────────────────────────────┘
+```
 
-旧架构采用 Orchestrator + 意图路由 + 3 个子 Agent（检索/诊断/指引），存在以下问题：
+### 4.2 分层架构
 
-| 问题 | 说明 |
+```
+┌─────────────────┐
+│   api/          │  ← HTTP 入口层（FastAPI 路由、参数校验）
+├─────────────────┤
+│   agents/       │  ← AI 推理层（ReAct / FC / 纯判断）
+├─────────────────┤
+│   tools/        │  ← 工具执行层（检索/图谱/文档解析）
+├─────────────────┤
+│   services/     │  ← 外部服务客户端层（百炼/Redis/Neo4j）
+├─────────────────┤
+│   embeddings/   │  ← 向量化层（文本/图像/多模态）
+├─────────────────┤
+│   schemas/      │  ← 数据模型层（请求/响应/内部模型）
+├─────────────────┤
+│   config/       │  ← 配置层（环境变量、连接信息）
+└─────────────────┘
+```
+
+---
+
+## 5. 模块设计
+
+### 5.1 agents/ — AI 推理层
+
+#### BaseAgent (`base_agent.py`)
+
+Agent 抽象基类，定义统一接口和模板方法。
+
+**核心模型**：
+- `AgentInput`：统一输入（user_message, session_id, images, context, conversation_history）
+- `AgentOutput`：统一输出（agent_name, message, tools_used, metadata, latency_ms）
+
+**提供的执行模式**：
+
+| 方法 | 用途 | 使用者 |
+|------|------|--------|
+| `run()` | 基础 LLM 对话 | MemoryAgent, RealtimeMemoryAgent |
+| `run_with_react()` | ReAct 工具调用循环 | FixAgent（非流式） |
+| `run_with_react_stream()` | ReAct + SSE 流式 | FixAgent（流式） |
+| `run_stream()` | 基础流式对话 | 暂无直接使用 |
+
+**上下文注入机制**：`_build_messages()` 自动将 context 中的 `previous_summary`、`relevant_facts`、`user_preferences`、`session_preferences`、`unresolved_items` 注入 system prompt，实现无状态请求的有状态上下文。
+
+---
+
+#### FixAgent (`fix_agent.py`)
+
+统一诊断 Agent，持有全部工具，通过 ReAct 循环自主决策。
+
+- **执行入口**：`run_with_react()` / `run_with_react_stream()`
+- **持有工具**：`knowledge_retrieval`、`graph_query_diagnosis_path`、`graph_search_devices`
+- **工具调用策略**（在 system prompt 中定义）：
+  - 简单知识查询 → knowledge_retrieval → 直接回答
+  - 故障诊断 → knowledge_retrieval + graph_query_diagnosis_path → 综合分析
+  - 维修指引 → knowledge_retrieval + graph_query_diagnosis_path → 标准化步骤
+  - 不确定设备 → graph_search_devices → 确认后再诊断
+- **回答格式**：诊断结论 + 操作步骤（含操作内容、所需工具、安全注意）
+- **单例**：`get_fix_agent()`
+
+---
+
+#### ReviewAgent (`review_agent.py`)
+
+3 层确定性校验管线，零 LLM 调用。仅第 3 层会修改输出内容。
+
+**第 1 层：检索依据校验（`_GroundingCheck`）**
+- 拆分回答为句子 → 识别事实性陈述 → 从 react_trace 收集检索证据
+- 向量化句子和证据 → 计算余弦相似度矩阵
+- 相似度 < 0.35 的句子标记为"未验证"
+- 向量化失败或证据缺失时默认通过
+
+**第 2 层：图谱路径校验（`_GraphCheck`）**
+- 从回答中提取故障-方案对应关系
+- 优先用 react_trace 中图谱查询结果做 O(1) 匹配
+- 未命中时调用 `GraphService.fault_node_exists()` / `solution_node_exists()` 确认节点存在性
+- Neo4j 不可用时用 trace 结果兜底
+
+**第 3 层：安全规则引擎（`_SafetyCheck`）**
+- 7 类危险操作关键词匹配（高压电气/高温/化学品/重物/旋转部件/压力容器/电池）
+- 检查对应安全关键词是否存在
+- 缺失则自动追加标准化安全警告文本
+
+**内联标记**：`get_inline_markers()` 为流式输出提供标记位置，在未验证内容前插入 `⚠️[依据不足]` / `⚠️[图谱:xxx]` 标记。
+
+---
+
+#### MemoryAgent (`memory_agent.py`)
+
+工作记忆整理，将多条原始对话压缩为结构化摘要。
+
+- **执行入口**：`run()`（覆盖基类，实现 function calling 流程）
+- **工具**：`search_similar_facts` — 批量搜索语义相似的历史事实
+- **输出**：`MemorySummary` — new_facts / superseded_ids / updated_preferences / updated_unresolved / resolved_item_ids / brief_summary
+- **自动入库**：提取的新事实自动向量化写入 Redis，带 `metadata.type="fact"` 标记
+- **重试机制**：JSON 解析失败自动重试 1 次
+- **触发条件**：Java 端对话数 >= 30 条时调用
+
+---
+
+#### RealtimeMemoryAgent (`realtime_memory_agent.py`)
+
+实时记忆更新检测，每轮对话后异步调用。
+
+- **检测范围**：仅检测"事实纠正"和"偏好变更"两类操作
+- **执行模式**：纯判断（不用 function calling），直接 JSON 输出，< 3s 完成
+- **偏好操作类型**：
+  - `upsert`：新增或修改偏好
+  - `delete`：撤销/删除偏好
+- **事实纠正流程**：用 wrong_content 向量匹配旧事实 → 删除旧向量 → 写入正确事实 → 返回 superseded_fact_ids
+
+---
+
+### 5.2 services/ — 外部服务客户端层
+
+#### LLMService (`llm_service.py`)
+
+封装阿里云百炼 API。
+
+- **模型**：qwen-plus
+- **API 端点**：`https://dashscope.aliyuncs.com/compatible-mode/v1`
+- **核心方法**：
+  - `chat()` — 基础对话（支持流式/非流式、response_format）
+  - `chat_with_tools()` — 带工具调用的对话（自动处理 tool_call 循环，最大 10 轮）
+- **客户端**：httpx.AsyncClient（连接池复用，60s 超时）
+- **单例**：`get_llm_service()`
+
+---
+
+#### VectorService (`vector_service.py`)
+
+基于 Redis Stack 的向量存储和检索。
+
+- **索引名**：`knowledge_vectors`
+- **向量维度**：1024（与 qwen2.5-vl-embedding 匹配）
+- **距离度量**：COSINE
+- **索引算法**：HNSW
+- **核心方法**：
+  - `add_vector()` / `add_vector_batch()` — 写入向量
+  - `search()` — 原生向量 KNN 搜索
+  - `search_by_text()` — 文本→向量→搜索（便捷方法）
+  - `delete()` — 删除向量（通过删除 Redis Hash key）
+- **过滤支持**：按 category（TAG）、tags（TAG）过滤
+- **工具函数**：`build_redis_filter(category, tags)` — 构建 RediSearch 过滤表达式，供 API 层和工具层复用
+- **索引自动管理**：启动时自动创建/迁移索引
+
+---
+
+#### GraphService (`graph_service.py`)
+
+Neo4j 图数据库只读查询服务。
+
+**图谱 Schema**：
+
+```
+(Device)-[:OWNS]->(Component)-[:CAUSES]->(Fault)-[:HAS_SOLUTION]->(Solution)
+(Device)-[:HAS_FAULT]->(Fault)   ← 历史故障记录
+```
+
+**核心方法**：
+
+| 方法 | 功能 |
 |------|------|
-| 意图路由延迟 | 每次请求多一轮 LLM 调用（约1-2秒），但实际子 Agent 的工具集高度重叠 |
-| 子 Agent 割裂 | 检索/诊断/指引各自独立，无法在同一 ReAct 循环中灵活组合工具 |
-| 路由准确率瓶颈 | 意图识别存在误分类风险，用户问题往往横跨多个"意图" |
-| 代码冗余 | 3 个子 Agent 的系统提示词和工具集大量重复 |
+| `find_devices()` | 按关键字模糊匹配设备 |
+| `search_components_by_embedding()` | 向量匹配部件（Neo4j 向量索引） |
+| `search_faults_by_embedding()` | 向量匹配故障（Neo4j 向量索引） |
+| `fault_node_exists()` | 检查故障节点是否存在（模糊匹配） |
+| `solution_node_exists()` | 检查方案节点是否存在（模糊匹配） |
+| `find_diagnosis_paths()` | 5 分支诊断路径分页查询 |
+| `find_components_by_device()` | 查询设备下的部件 |
+| `find_faults_by_component()` | 查询部件关联的故障 |
+| `find_solutions_by_fault()` | 查询故障的解决方案 |
 
-新架构移除意图路由层，合并为单一 FixAgent：
+**5 分支路由逻辑**：根据传入的 device_ids / component_ids / fault_ids 组合，自动选择最优 Cypher 查询分支。
 
-- **FixAgent**：统一 ReAct Agent，持有全部工具（知识检索 + 图谱查询 + 设备搜索），LLM 在 ReAct 循环中自主决定调用哪些工具、调用顺序、调用次数
-- **ReviewAgent**：3层确定性校验管线，零 LLM 调用，对 FixAgent 输出做校验（检索依据向量相似度 → 图谱路径 Neo4j 确认 → 安全规则引擎补全）
-- **MemoryAgent**：保持不变，独立由 `/ai/memory/consolidate` 端点调用
-- **RealtimeMemoryAgent**：实时记忆更新检测，每轮对话后异步调用，检测事实纠正和偏好变更（< 3s），不阻塞主对话流
+---
 
-### 为什么不用 LangGraph
+#### KnowledgeService (`knowledge_service.py`)
+
+知识导入编排服务，编排 `文档解析 → 向量化 → Redis 入库` 完整流程。
+
+- **处理单元**：按 PDF 章节（"第X章"）分组处理
+- **文本**：分块向量化（批量 25 条/批，百炼 API 限制），存入 Redis
+- **表格**：转 markdown 文本后向量化入库
+- **图片**：用图注文本向量化入库（metadata 记录本地路径）
+- **单例**：`get_knowledge_service()`
+
+---
+
+### 5.3 tools/ — 工具执行层
+
+#### BaseTool (`base_tool.py`)
+
+工具抽象基类，模板方法模式。
+
+- **核心模型**：`ToolResult`（success / data / error）、`ToolError`（code / message）、`ToolException`
+- **模板方法**：`run()` 自动捕获 ToolException → ToolResult，未知异常 code="TOOL_ERROR"
+- **OpenAI 兼容**：`to_openai_schema()` 生成 function calling 格式的工具定义
+
+---
+
+#### KnowledgeRetrievalTool (`knowledge_retrieval_tool.py`)
+
+知识库向量检索工具。
+
+- **支持模式**：纯文本检索 / 图文混合检索（文本 + 图片向量平均融合）
+- **参数**：query, top_k, category, tags, image_urls
+- **过滤**：支持 category 和 tags 的 RediSearch 过滤表达式
+
+---
+
+#### GraphQueryTool (`graph_query_tool.py`)
+
+图谱诊断路径查询工具。
+
+- **查询流程**：component_description → 向量匹配部件 → fault_description → 向量匹配故障 → 5 分支 Cypher 查询
+- **返回**：每条路径含向量分数、历史记录标记、可读路径文本
+
+#### GraphSearchDeviceTool (`graph_query_tool.py`)
+
+图谱设备搜索工具，按关键字模糊匹配 Device 节点。
+
+---
+
+#### FactRetrievalTool (`fact_retrieval_tool.py`)
+
+事实向量检索工具，MemoryAgent 专用。批量并发检索多条候选事实的相似历史事实。
+
+---
+
+#### DocumentParserTool (`document_tool.py`)
+
+PDF 文档解析工具。
+
+- **技术栈**：pdfplumber（文本+表格提取）+ PyMuPDF / fitz（图片提取，可选）
+- **关键能力**：章节自动识别（"第X章"正则）、图注匹配、表格清理、CMYK→RGB 转换
+- **远程文件**：HTTP URL 自动下载到临时目录
+
+---
+
+### 5.4 embeddings/ — 向量化层
+
+#### TextEmbedding (`text_embedding.py`)
+
+文本向量化，使用 `qwen2.5-vl-embedding` 模型，输出 1024 维。
+
+- **缓存**：Redis 缓存（key: `emb:v2:{md5}`），TTL 24h
+- **批量**：`embed_batch()` 自动分离缓存命中/未命中，减少 API 调用
+
+#### ImageEmbedding (`image_embedding.py`)
+
+图像向量化，使用同一 `qwen2.5-vl-embedding` 模型，输出 1024 维，确保图文统一语义空间。
+
+- **缓存**：Redis 缓存（key: `img_emb:v2:{md5}`）
+- **输入**：图片 URL 或 base64
+
+#### MultimodalEmbedding (`multimodal_embedding.py`)
+
+门面模式（Facade），对外提供统一入口，内部按输入类型分发给 TextEmbedding / ImageEmbedding。
+
+---
+
+### 5.5 schemas/ — 数据模型层
+
+| 文件 | 内容 |
+|------|------|
+| `models.py` | 枚举（UserRole, KnowledgeStatus, CaseStatus, AgentMode 等）+ 基础响应模型（BaseResponse, ErrorResponse）+ 通用类型（VectorSearchResult, GraphNode, DetectionBox 等） |
+| `request.py` | 请求模型：ChatRequest, KnowledgeImportRequest, KnowledgeSearchRequest, MemoryConsolidateRequest 等。含 Java 端专用模型（CaseCreateRequest, DeviceCreateRequest 等）和已废弃模型（KnowledgeUploadRequest 等） |
+| `response.py` | 响应模型：ChatResponse, KnowledgeImportResponse, MemoryConsolidateResponse 等。含 camelCase serialization_alias 供 Java 端解析 |
+| `memory.py` | MemoryAgent 内部解析模型（snake_case，无 alias），与 response.py 中的 API 序列化模型结构对齐但独立维护 |
+
+---
+
+### 5.6 config/ — 配置层
+
+**Settings 类**：从 `.env` 读取所有配置，含 LLM（API Key、模型、温度）、Redis（host/port/password/db/ttl）、Neo4j（uri/username/password/database）。
+
+---
+
+## 6. 核心数据流
+
+### 6.1 故障诊断流程（/ai/chat）
+
+```
+用户: "电动机轴承过热是怎么回事？"
+
+Java Backend
+  ├── 从 Redis 获取 ChatMemory（会话历史）
+  ├── 调用 /ai/memory/search_facts 检索相关历史事实
+  ├── 组装 ChatRequest（message + session_id + conversation_history + context）
+  └── POST /ai/chat
+
+FixAgent.run_with_react()
+  ├── _build_messages(): system prompt + context + history + user message
+  ├── get_tools(): 注册 3 个工具
+  └── chat_with_tools() ReAct 循环:
+       ├── Thought: "需要查图谱理解因果链路"
+       ├── Action: graph_query_diagnosis_path(fault_description="轴承过热")
+       │   └── TextEmbedding.embed() → Neo4j 向量索引匹配
+       │   └── 5分支 Cypher 查询诊断路径
+       ├── Observation: 部件→故障→解决方案链路
+       ├── Thought: "还需要检索维修手册"
+       ├── Action: knowledge_retrieval(query="电动机轴承过热原因")
+       │   └── TextEmbedding.embed() → Redis FT.SEARCH KNN
+       ├── Observation: 检索到维修手册相关段落
+       └── Answer: 综合诊断结论 + 维修步骤
+
+ReviewAgent.review()
+  ├── 第1层 _GroundingCheck: 向量相似度验证事实性陈述
+  ├── 第2层 _GraphCheck: Neo4j Cypher 确认故障-方案对应关系
+  └── 第3层 _SafetyCheck: 关键词匹配，缺失安全警告自动追加
+
+ChatResponse → Java Backend
+  { message, tools_used, verification, latency_ms }
+```
+
+### 6.2 流式对话流程（/ai/chat/stream）
+
+```
+采用「先缓冲再验证」策略：
+
+SSE 事件序列:
+  session_id → status(FixAgent分析中) → tool(工具调用) →
+  status(验证中) → marker(⚠️未验证标记) → token(逐字) → ...
+  verification(校验摘要) → done(耗时/工具)
+
+关键点：
+  - ReAct 阶段实时推送 status/tool 事件（展示进度）
+  - token 先缓冲不发送，验证完成（~300ms）后才流式输出
+  - 在未验证内容字符位置前内联插入 marker 事件
+```
+
+### 6.3 知识导入流程（/ai/knowledge/import）
+
+```
+Java 后端上传 PDF URL
+  → KnowledgeService.import_document()
+    → DocumentParserTool: 下载 → pdfplumber 逐页提取文本/表格 + PyMuPDF 提取图片
+    → 按章节合并 → 文本分块（每批 25 条）→ TextEmbedding.embed_batch()
+    → 表格转 markdown → TextEmbedding.embed()
+    → 图片图注 → TextEmbedding.embed()
+    → VectorService.add_vector_batch() → Redis
+  → KnowledgeImportResponse（file_name, text/image/table count, process_time_ms）
+```
+
+### 6.4 记忆整理流程（/ai/memory/consolidate）
+
+```
+Java 后端检测对话数 >= 30
+  → POST /ai/memory/consolidate（含旧偏好/旧未完成/上一轮摘要）
+  → MemoryAgent.run()（function calling 模式）
+    → LLM 读取对话 → 提取候选事实 → search_similar_facts 检索
+    → 判断冲突 → 输出 MemorySummary JSON
+    → 新事实自动向量化入库（Redis，metadata.type="fact"）
+  → MemoryConsolidateResponse → Java 存储到 MySQL + 事实向量表
+```
+
+### 6.5 实时记忆更新流程（/ai/memory/realtime_update）
+
+```
+每轮对话完成后 Java 异步调用（不阻塞主对话流）
+  → RealtimeMemoryAgent.run()
+    → LLM 纯判断（仅看本轮消息，JSON 输出）
+    → 如有事实纠正：
+      → wrong_content 向量匹配 → 删除旧事实 → 写入纠正后事实
+      → 返回 superseded_fact_ids 给 Java 标记旧记录
+    → 如有偏好变更（upsert/delete）→ 返回 preference_changes 给 Java
+  → 全程 < 3s
+```
+
+---
+
+## 7. 数据模型
+
+### 7.1 核心请求/响应
+
+**ChatRequest**：session_id, message(max 50000), images(最多10张), stream, conversation_history, context
+
+**ChatResponse**：session_id, message, tools_used, verification(3层校验结果), latency_ms
+
+**KnowledgeImportRequest**：file_url, file_type(pdf), category, tags
+
+**KnowledgeImportResponse**：file_name, total_pages, text_count, image_count, table_count, sections, process_time_ms
+
+**MemoryConsolidateResponse**：session_id, summary(MemorySummary), original_count, consolidated_at
+
+### 7.2 图谱数据模型（Neo4j）
+
+```
+Device(id, name, code, model, location, manufacturer)
+  └─ OWNS →
+Component(id, name, partNumber, specification, supplier, lifecycle, embedding)
+  └─ CAUSES →
+Fault(id, code, name, description, severity, category, embedding)
+  └─ HAS_SOLUTION →
+Solution(id, code, title, description, toolsRequired, estimatedTime, difficulty, verified)
+
+Device ─ HAS_FAULT → Fault (历史故障记录)
+```
+
+### 7.3 向量存储模型（Redis）
+
+```
+key: doc:{doc_id}
+fields: id, text, vector(FLOAT32[1024]), metadata(JSON), category(TAG), tags(TAG), created_at
+索引: knowledge_vectors (HNSW, COSINE)
+区分: metadata.type = "fact" | "text" | "table" | "image"
+```
+
+---
+
+## 8. API 接口
+
+### 8.1 AI 模块对外接口
+
+| 接口 | 方法 | 描述 | 关键 Agent |
+|------|------|------|-----------|
+| `/ai/chat` | POST | 对话接口（非流式） | FixAgent → ReviewAgent |
+| `/ai/chat/stream` | POST | SSE 流式对话（内联验证标记） | FixAgent → ReviewAgent |
+| `/ai/knowledge/search` | POST | 向量检索（通过 KnowledgeRetrievalTool） | 无 Agent |
+| `/ai/knowledge/import` | POST | 文档解析→向量化→入库管道 | KnowledgeService |
+| `/ai/memory/consolidate` | POST | 记忆整理（对话 ≥ 30 条触发） | MemoryAgent |
+| `/ai/memory/realtime_update` | POST | 实时记忆更新检测（< 3s） | RealtimeMemoryAgent |
+| `/ai/memory/search_facts` | POST | 事实向量检索（组装上下文时调用） | 无 Agent |
+
+### 8.2 SSE 流式事件格式
+
+```
+data: {"event": "session_id",    "data": {"session_id": "xxx"}}
+data: {"event": "status",        "data": {"stage": "...", "mode": "fix_agent"}}
+data: {"event": "tool",          "data": {"tool": "knowledge_retrieval"}}
+data: {"event": "marker",        "data": {"text": "⚠️[依据不足-相似度0.21]", "type": "grounding_unverified"}}
+data: {"event": "token",         "data": {"content": "根"}}
+...（逐字流式）...
+data: {"event": "verification",  "data": {"has_issues": true, "summary": {...}}}
+data: {"event": "done",          "data": {"tools_used": [...], "latency_ms": 3200}}
+data: {"event": "error",         "data": {"message": "..."}}
+```
+
+### 8.3 与 Java 后端的调用关系
+
+```
+Java Backend                         FixAgent (Python)
+  POST /ai/chat                     → FixAgent → ReviewAgent → ChatResponse
+  POST /ai/chat/stream              → FixAgent → ReviewAgent → SSE 事件流
+  POST /ai/knowledge/import         → KnowledgeService → KnowledgeImportResponse
+  POST /ai/knowledge/search         → KnowledgeRetrievalTool → VectorService → KnowledgeSearchResponse
+  POST /ai/memory/consolidate       → MemoryAgent → MemoryConsolidateResponse
+  POST /ai/memory/realtime_update   → RealtimeMemoryAgent → 更新结果
+  POST /ai/memory/search_facts      → VectorService → 相关事实列表
+```
+
+---
+
+## 9. 外部依赖
+
+### 9.1 外部服务
+
+| 服务 | 用途 | 连接方式 |
+|------|------|---------|
+| 阿里云百炼 API | LLM 推理（qwen-plus）+ 向量化（qwen2.5-vl-embedding） | HTTPS |
+| Redis Stack | 向量存储与检索 + 缓存 | TCP |
+| Neo4j | 设备检修知识图谱查询 | Bolt |
+
+### 9.2 核心 Python 依赖
+
+| 包 | 用途 |
+|---|------|
+| fastapi + uvicorn | Web 服务框架 |
+| dashscope | 阿里云百炼 SDK |
+| httpx | 异步 HTTP 客户端 |
+| redis | Redis 客户端 |
+| neo4j | Neo4j Bolt 驱动 |
+| pydantic | 数据校验与序列化 |
+| pdfplumber + PyMuPDF | PDF 文档解析 |
+| python-multipart | 文件上传支持 |
+| python-dotenv | 环境变量管理 |
+
+### 9.3 环境变量
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `DASHSCOPE_API_KEY` | 百炼 API Key | 必填 |
+| `LLM_MODEL` | LLM 模型 | qwen-plus |
+| `LLM_TEMPERATURE` | 生成温度 | 0.7 |
+| `LLM_TOP_P` | top_p 采样 | 0.9 |
+| `LLM_MAX_TOKENS` | 最大输出 token | 2000 |
+| `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` / `REDIS_DB` | Redis 连接 | localhost:6379 |
+| `REDIS_TTL` | 向量缓存 TTL（秒） | 86400 |
+| `NEO4J_URI` / `NEO4J_USERNAME` / `NEO4J_PASSWORD` / `NEO4J_DATABASE` | Neo4j 连接 | bolt://localhost:7687 |
+
+---
+
+## 10. 部署架构
+
+```
+┌──────────────────────────────────────────────────┐
+│                Java Backend (:8080)               │
+│  MySQL + Neo4j + Redis(ChatMemory) + OSS          │
+└──────────────────────────────────────────────────┘
+                        │ HTTP (内部)
+                        ▼
+┌──────────────────────────────────────────────────┐
+│           Python AI Service (:8000)                │
+│  FastAPI + Uvicorn                                │
+│  FixAgent + ReviewAgent + MemoryAgent             │
+│  内存占用 < 500MB                                  │
+└──────────────────────────────────────────────────┘
+         │                    │              │
+         ▼                    ▼              ▼
+   百炼 API (远程)      Redis Stack     Neo4j
+
+目标平台：4核 8GB 龙芯虚拟机（LoongArch + 麒麟OS）
+启动方式：
+  uvicorn api.main:app --host 0.0.0.0 --port 8000 --workers 4
+```
+
+---
+
+## 11. 关键设计决策
+
+### 11.1 为什么不用 LangGraph
 
 | 考量 | 结论 |
 |------|------|
-| 功能需求 | FixAgent 是线性 ReAct 循环，无条件分支/并行/中断恢复需求 |
-| 硬件约束 | 4核8GB 龙芯 VM，LangGraph + LangChain 依赖链庞大 |
-| 现有基础 | BaseAgent 已完整实现 ReAct 循环 + SSE 流式 + function calling |
+| 功能需求 | FixAgent 是线性 ReAct 循环，无复杂条件分支/并行/中断恢复需求 |
+| 硬件约束 | 4核 8GB 龙芯 VM，LangGraph + LangChain 依赖链庞大 |
+| 现有基础 | BaseAgent 已完整实现 ReAct + SSE + function calling |
 | 维护成本 | 原生实现更可控，无框架升级兼容风险 |
 
----
+### 11.2 为什么用 qwen2.5-vl-embedding 替代 text-embedding-v4
 
-## 系统架构图
+统一图文向量模型，文本和图片向量在同一语义空间（均为 1024 维），实现真正的图文混合检索（向量平均融合），无需额外的 CLIP 或跨模态对齐。
 
-### 整体架构
+### 11.3 为什么不用 YOLO/SAM 做图片检测
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Java Backend                              │
-│                                                                  │
-│   ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────────────┐   │
-│   │ MySQL   │  │ Neo4j   │  │  Redis  │  │ OSS/LocalStorage│   │
-│   │ (业务)  │  │ (图谱)  │  │ (缓存)  │  │   (文件)        │   │
-│   └─────────┘  └─────────┘  └─────────┘  └─────────────────┘   │
-│                                                                  │
-│   ┌──────────────────────────────────────────────────────────┐   │
-│   │                    Service Layer                          │   │
-│   │  • CaseService (案例管理)                                 │   │
-│   │  • DeviceService (设备管理)                               │   │
-│   │  • KnowledgeService (知识库管理)                          │   │
-│   │  • ChatMemoryService (会话管理)                           │   │
-│   └──────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              │ HTTP 调用
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Python AI Module                              │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │                      API Layer                            │   │
-│  │  POST /ai/chat              - 对话（非流式）              │   │
-│  │  POST /ai/chat/stream       - 对话（SSE 流式）            │   │
-│  │  POST /ai/knowledge/import  - 知识导入                    │   │
-│  │  POST /ai/knowledge/search  - 知识检索                    │   │
-│  │  POST /ai/memory/consolidate  - 记忆整理                   │   │
-│  │  POST /ai/memory/realtime_update - 实时记忆更新检测        │   │
-│  │  POST /ai/memory/search_facts - 事实向量检索               │   │
-│  │  GET  /api/asr/health          - ASR 健康检查              │   │
-│  │  POST /api/asr/transcribe      - 音频转写（非流式）         │   │
-│  │  POST /api/asr/transcribe-stream - 音频转写（SSE 流式）    │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                              │                                   │
-│                              ▼                                   │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │              FixAgent (统一 ReAct Agent)                   │   │
-│  │                                                            │   │
-│  │  系统提示词融合：知识检索 + 故障诊断 + 维修指引            │   │
-│  │  ReAct 循环：Think → Action → Observation → ... → Answer  │   │
-│  │                                                            │   │
-│  │  可用工具：                                                │   │
-│  │  ├── knowledge_retrieval   （知识库向量检索）              │   │
-│  │  ├── graph_query_diagnosis_path （图谱诊断路径查询）       │   │
-│  │  └── graph_search_devices  （图谱设备搜索）                │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                              │                                   │
-│                              ▼                                   │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │              ReviewAgent (3层确定性校验管线)               │   │
-│  │                                                            │   │
-│  │  零 LLM 调用，全部为确定性操作                             │   │
-│  │  校验流程：                                                │   │
-│  │  ├── 第1层：检索依据校验（向量相似度比对）                 │   │
-│  │  ├── 第2层：图谱路径校验（Neo4j Cypher 确认）             │   │
-│  │  ├── 第3层：安全规则引擎（关键调节点匹配补全）             │   │
-│  │  └── 仅第3层会修改输出（追加安全警告）                    │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                              │                                   │
-│                              ▼                                   │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │                    服务 + 工具层                            │   │
-│  │                                                            │   │
-│  │  Services:                                                 │   │
-│  │  ├── LLMService      → 阿里云百炼 (qwen-plus)             │   │
-│  │  ├── VectorService   → Redis Search (FT.SEARCH KNN)       │   │
-│  │  └── GraphService    → Neo4j (Cypher)                      │   │
-│  │                                                            │   │
-│  │  Embeddings:                                               │   │
-│  │  └── TextEmbedding   → 百炼 text-embedding-v4              │   │
-│  └──────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### 请求处理流程
-
-```
-用户输入
-    │
-    ▼
-Java 后端接收请求
-    │
-    ├── 查询会话历史（Redis ChatMemory）
-    ├── 组装请求参数
-    └── POST /ai/chat 或 /ai/chat/stream
-              │
-              ▼
-┌─────────────────────────────────────────┐
-│          FixAgent（ReAct 循环）           │
-│                                         │
-│  1. 多模态预处理（图片 → Qwen-VL 描述） │
-│  2. ReAct 循环（自主决策工具调用）       │
-│  3. 生成最终回答                         │
-└─────────────────────────────────────────┘
-              │
-              ▼
-┌─────────────────────────────────────────┐
-│          ReviewAgent（3层确定性校验）     │
-│                                         │
-│  第1层：检索依据校验（向量相似度比对）   │
-│  第2层：图谱路径校验（Neo4j Cypher）    │
-│  第3层：安全规则引擎（关键词匹配补全）  │
-│  输出：标记未验证声明 / 追加安全警告    │
-└─────────────────────────────────────────┘
-              │
-              ▼
-返回 ChatResponse 给 Java 后端
-    ├── 存储对话历史
-    └── 返回客户端
-```
-
----
-
-## 各包作用及 Spring 类比
-
-┌─────────────┬────────────────────────────────────────────────────────────┬─────────────────────────────────────────────┐
-│     包      │                            作用                             │                 Spring 类比                  │
-├─────────────┼────────────────────────────────────────────────────────────┼─────────────────────────────────────────────┤
-│ api/        │ FastAPI 入口，定义 /ai/* HTTP 接口，接收请求返回响应             │ @RestController 层                          │
-├─────────────┼────────────────────────────────────────────────────────────┼─────────────────────────────────────────────┤
-│ agents/     │ AI Agent 实现：FixAgent 统一推理 + ReviewAgent 审核            │ @Service + 业务逻辑类（AI 专用）               │
-├─────────────┼────────────────────────────────────────────────────────────┼─────────────────────────────────────────────┤
-│ services/   │ 封装 LLM、向量库(Redis)、图数据库(Neo4j) 的客户端                │ @Service + 外部服务客户端（类似 Feign）          │
-├─────────────┼────────────────────────────────────────────────────────────┼─────────────────────────────────────────────┤
-│ tools/      │ 工具集：知识检索、图谱查询（全部注册到 FixAgent）                  │ @Component 工具类 或 Integration Adapter      │
-├─────────────┼────────────────────────────────────────────────────────────┼─────────────────────────────────────────────┤
-│ schemas/    │ 请求/响应数据模型（Pydantic）                                  │ DTO / @RequestBody / @ResponseBody          │
-├─────────────┼────────────────────────────────────────────────────────────┼─────────────────────────────────────────────┤
-│ embeddings/ │ 文本向量化（百炼API text-embedding-v4）                        │ Utility 或 Helper 类                        │
-├─────────────┼────────────────────────────────────────────────────────────┼─────────────────────────────────────────────┤
-│ config/     │ 环境配置（API Key、Redis、Neo4j 连接）                         │ @ConfigurationProperties 或 application.yml │
-└─────────────┴────────────────────────────────────────────────────────────┴─────────────────────────────────────────────┘
-
----
-
-## 模块关系图
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                                  用户请求                                     │
-│                                     │                                        │
-│                                     ▼                                        │
-│  ┌───────────────────────────────────────────────────────────────────────┐   │
-│  │                        Java Backend (主系统)                           │   │
-│  │   MySQL / Neo4j / Redis / OSS / Service层                            │   │
-│  └───────────────────────────────────────────────────────────────────────┘   │
-│                                     │                                        │
-│                              HTTP 调用                                       │
-│                                     ▼                                        │
-│  ┌───────────────────────────────────────────────────────────────────────┐   │
-│  │                      api/main.py (入口层)                              │   │
-│  │                                                                       │   │
-│  │   POST /ai/chat        POST /ai/chat/stream                          │   │
-│  │   POST /ai/knowledge/import   POST /ai/knowledge/search              │   │
-│  │   POST /ai/memory/consolidate                                        │   │
-│  └───────────────────────────────────────────────────────────────────────┘   │
-│                          │                    │                               │
-│                          ▼                    ▼                               │
-│  ┌────────────────────────────────┐  ┌────────────────────────────────┐      │
-│  │    FixAgent (统一推理)          │  │    MemoryAgent (记忆整理)       │      │
-│  │                                │  │                                │      │
-│  │  ReAct 循环调用工具:            │  │  function calling 模式:        │      │
-│  │  ├── knowledge_retrieval       │  │  └── search_similar_facts     │      │
-│  │  ├── graph_query_diagnosis_path│  │                                │      │
-│  │  └── graph_search_devices      │  │  独立端点，不经过 FixAgent     │      │
-│  └────────────┬───────────────────┘  └────────────────────────────────┘      │
-│               │                                                              │
-│               ▼                                                              │
-│  ┌────────────────────────────────┐                                          │
-│  │    ReviewAgent (输出审核)       │                                          │
-│  │                                │                                          │
-│  │  3层确定性校验，零 LLM 调用     │                                          │
-│  │  校验 FixAgent 输出质量        │                                          │
-│  └────────────────────────────────┘                                          │
-│                          │                                                   │
-│                          ▼                                                   │
-│  ┌───────────────────────────────────────────────────────────────────────┐   │
-│  │                         tools/ (工具层)                                │   │
-│  │                                                                       │   │
-│  │  ┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐      │   │
-│  │  │ KnowledgeRetrieval│ │ GraphQueryTool   │ │ GraphSearchDevice│      │   │
-│  │  │     Tool          │ │ (诊断路径)       │ │     Tool         │      │   │
-│  │  └────────┬─────────┘ └────────┬─────────┘ └────────┬─────────┘      │   │
-│  │           │                    │                     │                │   │
-│  │  ┌──────────────────┐ ┌──────────────────┐                           │   │
-│  │  │ FactRetrievalTool│ │ DocumentParser   │                           │   │
-│  │  │(MemoryAgent专用) │ │    Tool          │                           │   │
-│  │  └──────────────────┘ └──────────────────┘                           │   │
-│  │                                                                       │   │
-│  │  BaseTool (工具基类) — run() 模板方法 + to_openai_schema()           │   │
-│  └───────────────────────────────────────────────────────────────────────┘   │
-│                          │                                                   │
-│       ┌──────────────────┼──────────────────┐                                │
-│       ▼                  ▼                  ▼                                │
-│  ┌──────────┐     ┌──────────┐     ┌──────────────┐                         │
-│  │ services/│     │ services/│     │  embeddings/ │                         │
-│  │          │     │          │     │              │                         │
-│  │LLMService│     │VectorSvc │     │TextEmbedding │                         │
-│  │(百炼API) │     │(Redis)   │     │(百炼API)     │                         │
-│  │          │     │          │     │              │                         │
-│  │GraphSvc  │     │          │     │              │                         │
-│  │(Neo4j)   │     │          │     │              │                         │
-│  └──────────┘     └──────────┘     └──────────────┘                         │
-│       │                  │                  │                                │
-│       ▼                  ▼                  ▼                                │
-│  ┌───────────────────────────────────────────────────────────────────────┐   │
-│  │                          外部服务依赖                                  │   │
-│  │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐       │   │
-│  │  │  阿里云百炼      │  │     Redis       │  │     Neo4j       │       │   │
-│  │  │  (LLM + Embed)  │  │   (向量库)      │  │   (图数据库)    │       │   │
-│  │  └─────────────────┘  └─────────────────┘  └─────────────────┘       │   │
-│  └───────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-│  ┌───────────────────────────────────────────────────────────────────────┐   │
-│  │                        config/settings.py                              │   │
-│  │  DASHSCOPE_API_KEY / REDIS_HOST / NEO4J_URI / ...                    │   │
-│  └───────────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 调用流程详解
-
-### 故障诊断流程（FixAgent ReAct）
-
-```
-用户说: "电动机轴承过热是怎么回事？"
-
-┌─────────────────────────────────────────────────────────────────────────┐
-│  1. Java Backend 接收请求                                                 │
-│     Controller → 组装请求参数 → POST /ai/chat                           │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  2. api/main.py 接收请求                                                  │
-│     @Post("/ai/chat") → FixAgent.run_with_react()                       │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  3. FixAgent ReAct 循环                                                   │
-│                                                                           │
-│   ┌─ ReAct 循环 ──────────────────────────────────────────────────┐     │
-│   │ Thought: "需要查图谱理解因果链路"                              │     │
-│   │ Action: graph_query_diagnosis_path(keyword="电动机",            │     │
-│   │         fault_name="轴承过热")                                  │     │
-│   │         └──► GraphService → Neo4j                              │     │
-│   │ Observation: 得到部件→故障→解决方案链路                        │     │
-│   │                                                                │     │
-│   │ Thought: "还需要检索相关技术细节"                              │     │
-│   │ Action: knowledge_retrieval(query="电动机轴承过热原因")          │     │
-│   │         └──► VectorService → Redis FT.SEARCH                   │     │
-│   │ Observation: 检索到维修手册相关内容                             │     │
-│   │                                                                │     │
-│   │ Thought: "信息够了，输出诊断结论"                              │     │
-│   │ Answer: 综合诊断结论（退出循环）                               │     │
-│   └────────────────────────────────────────────────────────────────┘     │
-│                                                                           │
-│   所有 LLM 交互通过 chat_with_tools() → 阿里云百炼 API                    │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  4. ReviewAgent 3层确定性校验                                              │
-│                                                                           │
-│   输入：FixAgent 回答 + react_trace（工具调用记录）                      │
-│   校验流程：                                                              │
-│   ├── 第1层 检索依据校验：向量化回答中的事实性陈述，与检索结果比对     │
-│   │   相似度 < 0.35 标记为"未验证"                                       │
-│   ├── 第2层 图谱路径校验：故障-方案对应关系是否在 Neo4j 中真实存在      │
-│   │   Cypher 查询确认，不可用时用 trace 结果兜底                        │
-│   ├── 第3层 安全规则引擎：7类危险操作的关键词匹配，缺失则追加警告      │
-│   └── 全部为确定性操作，零 LLM 调用                                      │
-│                                                                           │
-│   结果：标记未验证声明 / 自动追加安全警告 / 返回最终回答                │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  5. 返回 ChatResponse 给 Java Backend                                     │
-│     { message, tools_used, react_trace, review_result, latency_ms }     │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-### 多模态处理流程
-
-```
-用户上传图片 + "这个部件是什么？怎么修？"
-         │
-         ▼
-┌─────────────────────────────────┐
-│  FixAgent 多模态预处理           │
-│                                 │
-│  Qwen-VL 图片理解：             │
-│  → 识别设备/部件名称            │
-│  → 描述可见故障现象             │
-│  → 生成结构化文本描述           │
-│                                 │
-│  输出示例：                     │
-│  "图中为摩托车发动机气缸体，    │
-│   可见活塞顶部有明显烧蚀痕迹，  │
-│   气缸壁有纵向拉伤痕迹"        │
-└─────────────────────────────────┘
-         │
-         ▼
-    图片描述 + 用户文本
-    拼接为完整查询上下文
-         │
-         ▼
-    进入 ReAct 循环
-    （知识检索 + 图谱查询 + 诊断推理）
-
-【为什么不用 YOLO/SAM】
-- 赛题场景为"开放设备类型"（用户上传未知设备手册）
+- 赛题场景为"开放设备类型"（用户上传未知设备维修手册）
 - YOLO 需要针对每种设备训练，无法覆盖所有设备类型
-- Qwen-VL 作为多模态大模型，零样本即可理解未知设备图片
+- Qwen-VL 多模态大模型零样本即可理解未知设备图片
 - SAM 图像分割对文本检索流水线无直接价值
-```
 
-### 记忆整理流程
+### 11.4 架构演进：从多 Agent 到单 FixAgent
 
-```
-Java 后端检测对话数量
-   │
-   ├── 会话对话数 < 30条 → 继续累积
-   │
-   └── 会话对话数 >= 30条 → 触发整理
-              │
-              ▼
-        POST /ai/memory/consolidate
-              │
-              ▼
-┌──────────────────────────────────────────────┐
-│     MemoryAgent (function calling 模式)        │
-│                                                │
-│  1. 接收旧偏好 + 旧未完成事项 + 新对话        │
-│  2. LLM 提取候选事实                           │
-│  3. 调用 search_similar_facts 检索已有事实     │
-│  4. 判断冲突（新增/更新/废弃）                 │
-│  5. 输出结构化 JSON                            │
-└──────────────────────────────────────────────┘
-              │
-              ▼
-        返回 MemoryConsolidateResponse
-        {
-          new_facts, superseded_ids,
-          updated_preferences, updated_unresolved,
-          resolved_items, brief_summary
-        }
-              │
-              ▼
-        Java 存储：
-        ├── new_facts → 事实库（向量表）
-        ├── 偏好/未完成 → 摘要表
-        └── superseded_ids → 标记旧事实无效
-```
+旧架构：Orchestrator 意图路由 → 3 个子 Agent（检索/诊断/指引）
 
----
+**问题**：
+- 意图路由多一轮 LLM 调用（+1~2s 延迟）
+- 子 Agent 工具集高度重叠，各自独立无法灵活组合
+- 意图识别存在误分类风险
 
-## 包与包之间的关系
+**新架构**：单一 FixAgent 持有全部工具，ReAct 循环中自主决策。ReviewAgent 用确定性校验替代 LLM 自我审查（零额外 LLM 调用）。
 
-| 关系 | 描述 |
-|------|------|
-| api → agents | api 接收请求后调用 FixAgent/ReviewAgent/MemoryAgent |
-| agents → tools | FixAgent 在 ReAct 循环中调用 Tools（知识检索、图谱查询、设备搜索） |
-| agents → services | Agent 调用 LLMService 进行 LLM 交互 |
-| tools → services | Tools 内部调用 VectorService / GraphService 与外部交互 |
-| tools → embeddings | KnowledgeRetrievalTool 内部调用 TextEmbedding 做查询向量化 |
-| services → 外部 | Services 封装对百炼API、Redis、Neo4j 的调用 |
-| schemas ← 所有 | 所有模块都依赖 Schemas 定义数据类型 |
-| config → 所有 | 所有模块都从 Config 读取配置 |
+### 11.5 RealtimeMemoryAgent 与 MemoryAgent 的分工
 
----
-
-## 模块职责
-
-| 模块 | 职责 | 技术选型 |
-|-----|------|---------|
-| `api` | HTTP 接口、请求路由、参数校验 | FastAPI |
-| `agents` | FixAgent 统一推理 + ReviewAgent 审核 + MemoryAgent 记忆整理 + RealtimeMemoryAgent 实时更新检测 | 原生 Python（ReAct + FC + 纯判断） |
-| `config` | API Keys、模型配置 | python-dotenv |
-| `embeddings` | 文本向量提取 | 百炼API text-embedding-v4 |
-| `schemas` | 请求/响应数据模型 | Pydantic |
-| `services` | LLM 调用封装、向量存储、图谱查询 | 百炼SDK / Redis / Neo4j |
-| `tools` | 知识检索、图谱查询 | 多种 |
-
----
-
-## 模块边界划分
-
-### Java 后端职责
-
-| 模块 | 职责 |
-|-----|------|
-| MySQL | 案例数据、设备数据、知识库业务数据 |
-| Neo4j | 图谱业务数据（实体、关系）—— Java 端负责增删改 |
-| Redis | 会话 ChatMemory、缓存、业务队列 |
-| OSS | 文件存储（图片、文档） |
-| Service层 | 全部业务逻辑（案例审核、设备管理等） |
-
-### Python AI 模块职责
-
-| 模块 | 职责 |
-|-----|------|
-| FixAgent | 统一推理：知识检索 + 故障诊断 + 维修指引 |
-| ReviewAgent | 3层确定性校验管线（检索依据/图谱路径/安全规则） |
-| MemoryAgent | 对话记忆整理压缩（定时整合） |
-| RealtimeMemoryAgent | 实时记忆更新检测（事实纠正 + 偏好变更，每轮对话后异步调用） |
-| Tools | 知识检索、图谱查询（只读） |
-| Services | LLM 调用、向量检索、图谱查询 |
-| Embeddings | 文本向量化 |
-
----
-
-## 工具列表
-
-| 工具名称 | 描述 | 归属 Agent | 位置 |
-|---------|------|-----------|------|
-| `knowledge_retrieval` | 知识库向量检索（Redis FT.SEARCH KNN） | FixAgent | tools/knowledge_retrieval_tool.py |
-| `graph_query_diagnosis_path` | 图谱诊断路径查询（设备→部件→故障→方案） | FixAgent | tools/graph_query_tool.py |
-| `graph_search_devices` | 图谱设备搜索（模糊匹配） | FixAgent | tools/graph_query_tool.py |
-| `search_similar_facts` | 事实向量检索（冲突检测用） | MemoryAgent | tools/fact_retrieval_tool.py |
-| `document_parser` | 文档解析（PDF/Word/TXT） | 知识导入流程 | tools/document_tool.py |
-
----
-
-## API 接口
-
-### AI 模块对外接口（Python 提供）
-
-| 接口 | 方法 | 描述 | Java 调用场景 |
-|-----|------|------|-------------|
-| `/ai/chat` | POST | 对话接口（FixAgent → ReviewAgent） | 用户日常对话 |
-| `/ai/chat/stream` | POST | SSE 流式响应 | 用户日常对话（流式） |
-| `/ai/knowledge/search` | POST | 直接调用 VectorService 检索 | 查询知识库 |
-| `/ai/knowledge/import` | POST | 文档解析→向量化→入库 | 导入维修手册 |
-| `/ai/memory/consolidate` | POST | 记忆整理 | 对话达到阈值时压缩 |
-| `/ai/memory/realtime_update` | POST | 实时记忆更新检测（事实纠正+偏好变更，<3s） | 每轮对话后异步调用 |
-| `/ai/memory/search_facts` | POST | 用用户消息检索相关历史事实 | 组装对话上下文时注入事实 |
-| `/api/asr/health` | GET | ASR 服务健康检查 | 检查 ASR 模型状态 |
-| `/api/asr/transcribe` | POST | 音频转写（非流式），返回完整结果 | 音频文件转文字 |
-| `/api/asr/transcribe-stream` | POST | 音频转写（SSE 流式），按 segment 分段返回 | 音频文件流式转文字 |
-
-### 已移除的接口
-
-| 接口 | 移除原因 |
-|------|---------|
-| `/ai/retrieval` | FixAgent 统一处理，无需单独检索端点 |
-| `/ai/diagnosis` | FixAgent 统一处理，无需单独诊断端点 |
-| `/ai/guidance` | FixAgent 统一处理，无需单独指引端点 |
-| `/ai/pipeline` | FixAgent 单次 ReAct 循环替代串行流水线 |
-
-### SSE 流式事件格式
-
-```
-data: {"event": "session_id", "data": {"session_id": "xxx"}}
-data: {"event": "status",     "data": {"message": "正在检索知识库..."}}
-data: {"event": "tool",       "data": {"name": "knowledge_retrieval", "arguments": {...}}}
-data: {"event": "token",      "data": {"content": "根据"}}
-data: {"event": "token",      "data": {"content": "分析"}}
-data: {"event": "review",     "data": {"status": "approved"}}
-data: {"event": "done",       "data": {"tools_used": [...], "latency_ms": 3200}}
-data: {"event": "error",      "data": {"message": "..."}}
-```
-
----
-
-## 依赖关系
-
-```
-api/main.py (Python AI 入口)
-    │
-    ├──► agents/fix_agent.py (统一推理)
-    │         │
-    │         ├──► tools/knowledge_retrieval_tool.py
-    │         │         └──► services/vector_service.py → Redis
-    │         │         └──► embeddings/text_embedding.py → 百炼API
-    │         │
-    │         ├──► tools/graph_query_tool.py
-    │         │         └──► services/graph_service.py → Neo4j
-    │         │
-    │         └──► services/llm_service.py → 百炼API (qwen-plus)
-    │
-    ├──► agents/review_agent.py (3层确定性校验)
-    │         ├──► embeddings/text_embedding.py → 百炼API（第1层向量化）
-    │         └──► services/graph_service.py → Neo4j（第2层图谱确认）
-    │
-    ├──► agents/memory_agent.py (记忆整理)
-    │         ├──► tools/fact_retrieval_tool.py
-    │         │         └──► services/vector_service.py → Redis
-    │         └──► services/llm_service.py → 百炼API
-    │
-    ├──► agents/realtime_memory_agent.py (实时记忆更新)
-    │         ├──► services/llm_service.py → 百炼API（纯判断）
-    │         ├──► embeddings/text_embedding.py → 百炼API（向量化纠正事实）
-    │         └──► services/vector_service.py → Redis（增删旧事实）
-    │
-    ├──► services/knowledge_service.py (知识导入)
-    │         ├──► tools/document_tool.py
-    │         ├──► embeddings/text_embedding.py
-    │         └──► services/vector_service.py
-    │
-    ├──► services/asr_service.py (语音识别)
-    │         └──► config/asr_settings.py
-    │
-    └──► services/vector_service.py (知识检索直通)
-```
-
----
-
-## 部署架构
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Java Backend                            │
-│                    (端口: 8080)                              │
-│                                                               │
-│   ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐       │
-│   │ MySQL   │  │ Neo4j   │  │  Redis  │  │   OSS   │       │
-│   │         │  │         │  │(ChatMem)│  │         │       │
-│   └─────────┘  └─────────┘  └─────────┘  └─────────┘       │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              │ HTTP (内部调用)
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    Python AI Service                         │
-│                    (端口: 8000)                              │
-│                                                               │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │  FastAPI + Uvicorn                                   │   │
-│   │  FixAgent + ReviewAgent + MemoryAgent               │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                              │                               │
-│   ┌─────────┐  ┌─────────┐  ┌─────────┐                     │
-│   │ LLM     │  │ Redis   │  │  Neo4j  │                     │
-│   │(百炼API)│  │(向量库) │  │ (图谱)  │                     │
-│   └─────────┘  └─────────┘  └─────────┘                     │
-└─────────────────────────────────────────────────────────────┘
-
-目标平台：4核 8GB 龙芯虚拟机（LoongArch + 麒麟OS）
-- LLM 推理通过远程 API（百炼），不消耗本地算力
-- Redis + Neo4j 轻量部署
-- Python 服务内存占用 < 500MB
-```
-
----
-
-## 已删除的模块
-
-### 本次架构重构删除
-
-| 删除模块 | 原因 |
-|---------|------|
-| `agents/orchestrator_agent.py` | FixAgent 统一处理，不再需要调度层 |
-| `agents/retrieval_agent.py` | 检索能力由 FixAgent 内置 |
-| `agents/diagnosis_agent.py` | 诊断能力由 FixAgent 内置 |
-| `agents/guidance_agent.py` | 指引能力由 FixAgent 内置 |
-| `agents/intention/` | 移除意图识别，FixAgent 自主决策 |
-| `chains/` | 移除路由映射，无需 IntentionType → AgentMode |
-
-### 早期架构调整删除
-
-| 删除模块 | 原因 |
-|---------|------|
-| `storage/` | 文件存储由 Java 后端管理 |
-| `memory/` | 会话管理由 Java 后端管理 |
-
----
-
-## 技术栈
-
-| 类别 | 技术选型 | 理由 |
-|-----|---------|------|
-| API 框架 | FastAPI | 高性能、自动文档、类型安全 |
-| Agent 框架 | 原生 Python | 轻量，无重型依赖，适配龙芯 4核8GB |
-| LLM | 阿里云百炼 (qwen-plus) | 国产、中文优化、远程 API 不消耗本地算力 |
-| 多模态 | Qwen-VL (百炼 API) | 零样本图片理解，覆盖开放设备类型 |
-| 向量数据库 | Redis Search | 高性能、国产友好 |
-| 图数据库 | Neo4j | 图谱查询能力强 |
-| Embedding | text-embedding-v4 | 百炼 API，中文语义优秀 |
-
----
-
-## 环境要求
-
-| 组件 | 要求 |
-|-----|------|
-| Python | 3.10+ |
-| Redis | 6.0+（需 RediSearch 模块） |
-| Neo4j | 4.0+ |
-| 内存 | 4GB+（AI 模块 < 500MB，其余给 Redis/Neo4j） |
-| 网络 | 需访问阿里云百炼 API |
+| | RealtimeMemoryAgent | MemoryAgent |
+|------|------|------|
+| 触发时机 | 每轮对话后异步 | 对话数 >= 30 条 |
+| 处理范围 | 仅纠正 + 偏好变更 | 完整整合（事实/偏好/待办/摘要） |
+| 耗时 | < 3s | 40~60s |
+| 架构 | 纯判断（无工具调用） | function calling |
+| 关系 | 补充，不替代 | 主力整合 |

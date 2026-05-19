@@ -15,7 +15,7 @@ Schemas请求模型模块
    （如 GraphQueryRequest, CaseCreateRequest, DeviceCreateRequest 等）
 3. 已废弃 → 被其他模型替代（如 KnowledgeUploadRequest 被 KnowledgeImportRequest 替代）
 
-标注在对应类的注释中。新开发时注意区分。"""
+标注在对应类的注释中。新开发时注意区分。
 
 【使用顺序】
 1. Java 端构造请求 JSON
@@ -47,8 +47,8 @@ ChatRequest request = ChatRequest.builder()
 5. 自定义校验（@validator）
 """
 
-from typing import Optional, List, Dict
-from pydantic import BaseModel, Field, validator
+from typing import Optional, List
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 from schemas.models import AgentMode, CaseStatus
 
 
@@ -107,23 +107,23 @@ class ChatRequest(BaseModel):
     conversation_history: Optional[List[dict]] = Field(default=None, description="多轮对话历史，格式：[{'role':'user','content':'...'},{'role':'assistant','content':'...'}]")
     context: Optional[dict] = Field(default=None, description="结构化上下文（摘要、事实、偏好、待办）")
 
-    @validator('images')
+    @field_validator('images')
+    @classmethod
     def validate_images(cls, v):
         """校验图片数量不超过10张"""
         if v and len(v) > 10:
             raise ValueError("最多支持10张图片")
         return v
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "session_id": "sess_abc123",
-                "message": "电动机轴承过热是什么原因？",
-                "mode": "diagnosis",
-                "images": ["https://example.com/fault1.jpg"],
-                "stream": True
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "session_id": "sess_abc123",
+            "message": "电动机轴承过热是什么原因？",
+            "mode": "diagnosis",
+            "images": ["https://example.com/fault1.jpg"],
+            "stream": True
         }
+    })
 
 
 # ==================== 知识库相关 ====================
@@ -244,6 +244,7 @@ class KnowledgeUploadRequest(BaseModel):
     【状态】已废弃，由 KnowledgeImportRequest 替代。
     原有字段与 KnowledgeImportRequest 功能重叠且缺少 file_type/category/tags 支持。
     请使用 KnowledgeImportRequest 代替。保留此模型仅用于兼容旧调用方。
+    """
     title: str = Field(..., description="文档标题")
     file_name: str = Field(..., description="文件名")
     file_url: str = Field(..., description="文件URL")
@@ -697,12 +698,12 @@ class ClipEmbedRequest(BaseModel):
     image_url: Optional[str] = Field(default=None, description="图片URL")
     mode: str = Field(default="text", description="模式: text/image/multimodal")
 
-    @validator('text', 'image_url')
-    def at_least_one_required(cls, v, values):
+    @model_validator(mode='after')
+    def at_least_one_required(self):
         """校验 text 或 image_url 至少提供一个"""
-        if not values.get('text') and not values.get('image_url'):
+        if not self.text and not self.image_url:
             raise ValueError("text或image_url至少需要提供一个")
-        return v
+        return self
 
 
 class DocumentParseRequest(BaseModel):

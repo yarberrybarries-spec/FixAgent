@@ -1,9 +1,7 @@
 import json
 import logging
-import os
-import tempfile
 from functools import partial
-from fastapi import FastAPI, HTTPException, Request, File, UploadFile
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse, JSONResponse
 
@@ -19,9 +17,7 @@ from agents.review_agent import get_review_agent
 from agents.memory_agent import get_memory_agent
 from agents.base_agent import AgentInput, AgentOutput
 from services.vector_service import get_vector_service
-from config.asr_settings import get_asr_settings
-from services.asr_service import get_asr_service, ALLOWED_EXTENSIONS
-from schemas.asr import ASRResponse
+from tools.knowledge_retrieval_tool import get_knowledge_retrieval_tool
 
 logger = logging.getLogger(__name__)
 
@@ -276,39 +272,30 @@ async def knowledge_import(request: KnowledgeImportRequest) -> KnowledgeImportRe
 
 @app.post("/ai/knowledge/search", response_model=KnowledgeSearchResponse)
 async def knowledge_search(request: KnowledgeSearchRequest) -> KnowledgeSearchResponse:
-    """直接调用向量检索服务，返回 TopK 相关片段。"""
+    """通过 KnowledgeRetrievalTool 进行向量检索，返回 TopK 相关片段。"""
     import time
 
     try:
         logger.info(f"[knowledge_search] q={request.query[:50]} top_k={request.top_k}")
-        svc = get_vector_service()
-
-        filter_parts = []
-        if request.category:
-            filter_parts.append(f"@category:{{{request.category}}}")
-        if request.tags:
-            tag_str = "|".join(request.tags)
-            filter_parts.append(f"@tags:{{{tag_str}}}")
-        filter_str = " ".join(f"({p})" for p in filter_parts) if filter_parts else None
+        tool = get_knowledge_retrieval_tool()
 
         t0 = time.time()
-        results = await svc.search_by_text(
-            text=request.query,
+        result = await tool.run(
+            query=request.query,
             top_k=request.top_k,
-            filter=filter_str
+            category=request.category,
+            tags=request.tags,
+            image_urls=request.images
         )
         query_time_ms = int((time.time() - t0) * 1000)
 
-        from schemas.models import VectorSearchResult
-        data = [
-            VectorSearchResult(
-                id=r["doc_id"],
-                score=r["score"],
-                content=r.get("text", ""),
-                metadata=r.get("metadata", {})
+        if not result.success:
+            raise HTTPException(
+                status_code=500,
+                detail=result.error.get("message", "检索失败") if result.error else "检索失败"
             )
-            for r in results
-        ]
+
+        data = result.data
 
         logger.info(f"[knowledge_search] found={len(data)} latency={query_time_ms}ms")
         return KnowledgeSearchResponse(
@@ -319,6 +306,8 @@ async def knowledge_search(request: KnowledgeSearchRequest) -> KnowledgeSearchRe
             total=len(data),
             query_time_ms=query_time_ms
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception(f"[knowledge_search] error")
         raise HTTPException(status_code=500, detail=str(e))
@@ -529,130 +518,6 @@ async def realtime_memory_update(request: RealtimeUpdateRequest):
             "preference_changes": [],
             "error": str(e)
         }
-
-
-# ==================== ASR 语音识别接口 ====================
-
-asr_settings = get_asr_settings()
-
-
-def _validate_audio(upload_file: UploadFile, content_length: str | None) -> str:
-    """验证上传音频文件，写入临时文件，返回临时文件路径。"""
-    ext = os.path.splitext(upload_file.filename or "")[1].lower()
-    if ext not in ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"不支持的音频格式: {ext}。支持: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
-        )
-
-    max_bytes = asr_settings.max_upload_mb * 1024 * 1024
-
-    if content_length:
-        try:
-            if int(content_length) > max_bytes:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"文件大小超过限制 ({asr_settings.max_upload_mb}MB)",
-                )
-        except ValueError:
-            pass
-
-    tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-    tmp_path = tmp.name
-    try:
-        content = upload_file.file.read()
-        if len(content) > max_bytes:
-            raise HTTPException(
-                status_code=400,
-                detail=f"文件大小超过限制 ({asr_settings.max_upload_mb}MB)",
-            )
-        tmp.write(content)
-        tmp.flush()
-    except HTTPException:
-        os.unlink(tmp_path)
-        raise
-    finally:
-        tmp.close()
-
-    return tmp_path
-
-
-@app.get("/api/asr/health")
-async def asr_health():
-    """ASR 服务健康检查"""
-    return {"status": "ok", "model": asr_settings.model_name}
-
-
-@app.post("/api/asr/transcribe", response_model=ASRResponse)
-async def asr_transcribe(request: Request, file: UploadFile = File(...)):
-    """音频转写（非流式）。上传音频文件，返回完整转写结果 JSON。"""
-    tmp_path = None
-    try:
-        content_length = request.headers.get("content-length")
-        tmp_path = _validate_audio(file, content_length)
-        logger.info(f"[asr] transcribe file={file.filename} size={os.path.getsize(tmp_path)}")
-
-        service = get_asr_service()
-        result = await service.transcribe(tmp_path)
-
-        logger.info(
-            f"[asr] transcribe done language={result['language']} "
-            f"duration={result['duration']:.1f}s segments={len(result['segments'])}"
-        )
-        return ASRResponse(
-            success=True,
-            message="转写完成",
-            code=200,
-            language=result["language"],
-            language_probability=result["language_probability"],
-            duration=result["duration"],
-            text=result["text"],
-            segments=result["segments"],
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("[asr] transcribe error")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-
-
-@app.post("/api/asr/transcribe-stream")
-async def asr_transcribe_stream(request: Request, file: UploadFile = File(...)):
-    """音频转写（SSE 流式）。上传音频文件，按 segment 分段流式返回识别内容。"""
-    tmp_path = None
-    try:
-        content_length = request.headers.get("content-length")
-        tmp_path = _validate_audio(file, content_length)
-        logger.info(f"[asr] transcribe-stream file={file.filename} size={os.path.getsize(tmp_path)}")
-
-        service = get_asr_service()
-
-        async def event_generator():
-            try:
-                async for segment in service.transcribe_stream(tmp_path):
-                    yield f"data: {json_dumps(segment)}\n\n"
-                yield f"data: {json_dumps({'event': 'done'})}\n\n"
-            except Exception as e:
-                logger.exception("[asr] stream error")
-                yield f"data: {json_dumps({'event': 'error', 'data': {'message': str(e)}})}\n\n"
-            finally:
-                if tmp_path and os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
-
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("[asr] transcribe-stream error")
-        raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):

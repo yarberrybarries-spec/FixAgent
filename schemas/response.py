@@ -24,10 +24,10 @@ Schemas响应模型模块
 """
 
 from typing import Optional, List, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from schemas.models import (
     BaseResponse, PaginationMeta,
-    DetectionResult, VectorSearchResult, GraphNode, GraphRelation
+    VectorSearchResult, GraphNode, GraphRelation
 )
 
 
@@ -70,13 +70,12 @@ class ChatStreamEvent(BaseModel):
     event: str = Field(..., description="事件类型: token/status/tool/done/error")
     data: Any = Field(..., description="事件数据")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "event": "token",
-                "data": {"content": "维修"}
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "event": "token",
+            "data": {"content": "维修"}
         }
+    })
 
 
 class ChatResponse(BaseResponse):
@@ -126,18 +125,17 @@ class ChatResponse(BaseResponse):
     latency_ms: Optional[int] = Field(default=None, description="响应延迟(ms)")
     verification: Optional[dict] = Field(default=None, description="3层确定性校验结果")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "success": True,
-                "message": "电动机轴承过热可能由以下原因造成：1. 润滑不良...",
-                "code": 200,
-                "session_id": "sess_abc123",
-                "intention": "troubleshoot",
-                "tools_used": ["knowledge_retrieval", "graph_query"],
-                "latency_ms": 1500
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "success": True,
+            "message": "电动机轴承过热可能由以下原因造成：1. 润滑不良...",
+            "code": 200,
+            "session_id": "sess_abc123",
+            "intention": "troubleshoot",
+            "tools_used": ["knowledge_retrieval", "graph_query"],
+            "latency_ms": 1500
         }
+    })
 
 
 # ==================== 知识库相关 ====================
@@ -185,8 +183,7 @@ class KnowledgeItem(BaseModel):
     created_at: str
     updated_at: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class KnowledgeListResponse(BaseResponse):
@@ -358,8 +355,7 @@ class CaseItem(BaseModel):
     created_at: str
     updated_at: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class CaseListResponse(BaseResponse):
@@ -433,8 +429,7 @@ class DeviceItem(BaseModel):
     created_at: str
     updated_at: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DeviceListResponse(BaseResponse):
@@ -556,89 +551,6 @@ class GraphStatsResponse(BaseResponse):
 
 
 # ==================== 工具调用相关 ====================
-
-class YoloDetectResponse(BaseResponse):
-    """
-    YOLO检测响应
-
-    【功能关联】YOLO目标检测、故障部件识别
-    【何时用】YOLO检测完成后
-
-    【字段说明】
-    - image_url: 被检测的图片 URL
-    - detections: 检测结果列表
-    - process_time_ms: 处理耗时
-
-    【Java 对应类】
-    ```java
-    public class YoloDetectResponse extends BaseResponse {
-        String imageUrl;
-        List<DetectionResult> detections;
-        int processTimeMs;
-    }
-    ```
-    """
-    image_url: str
-    detections: List[DetectionResult]
-    process_time_ms: int
-
-
-class SamSegmentResponse(BaseResponse):
-    """
-    SAM分割响应
-
-    【功能关联】SAM图像分割、精细化故障区域
-    【何时用】SAM分割完成后
-
-    【字段说明】
-    - image_url: 被分割的图片 URL
-    - masks: 分割掩码列表（每个 mask 是 dict）
-    - labels: 每个 mask 对应的标签
-    - process_time_ms: 处理耗时
-
-    【masks 结构示例】
-    ```json
-    [
-        {"mask": [[0,1,1], [1,1,0]], "bbox": [10, 20, 100, 150]},
-        {"mask": [[1,0,0], [0,0,1]], "bbox": [50, 60, 120, 180]}
-    ]
-    ```
-    """
-    image_url: str
-    masks: List[dict]
-    labels: List[str]
-    process_time_ms: int
-
-
-class ClipEmbedResponse(BaseResponse):
-    """
-    CLIP向量化响应
-
-    【功能关联】CLIP多模态模型、向量化
-    【何时用】生成文本或图片向量后
-
-    【字段说明】
-    - embedding: 生成的向量（浮点数列表）
-    - dimension: 向量维度（如 512、768）
-    - model: 使用的模型名称
-
-    【使用场景】
-    - 文本向量化 → 存入 Redis 向量库
-    - 图片向量化 → 用于相似图片检索
-
-    【Java 对应类】
-    ```java
-    public class ClipEmbedResponse extends BaseResponse {
-        List<Float> embedding;
-        int dimension;
-        String model;
-    }
-    ```
-    """
-    embedding: List[float]
-    dimension: int
-    model: str
-
 
 class DocumentParseResponse(BaseResponse):
     """
@@ -812,3 +724,4 @@ class MemoryConsolidateResponse(BaseResponse):
     summary: MemorySummary = Field(..., description="整理后的记忆摘要")
     original_count: int = Field(..., serialization_alias="originalCount", description="原始对话条数")
     consolidated_at: str = Field(..., serialization_alias="consolidatedAt", description="整理时间")
+

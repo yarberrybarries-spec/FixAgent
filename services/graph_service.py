@@ -1,21 +1,20 @@
 """
 图数据库服务
 
-基于 Neo4j 实现设备检修知识图谱的查询和关系管理。
+基于 Neo4j 实现设备检修知识图谱的只读查询。
+查询逻辑与 Java 端 GraphQueryServiceImpl 保持一致。
 
 【节点类型】
 - Device: 设备（id, name, code, model, location, manufacturer）
-- Component: 部件（id, name, partNumber, specification, supplier, lifecycle）
-- Fault: 故障（id, code, name, description, severity, category）
+- Component: 部件（id, name, partNumber, specification, supplier, lifecycle, embedding）
+- Fault: 故障（id, code, name, description, severity, category, embedding）
 - Solution: 解决方案（id, code, title, description, toolsRequired, estimatedTime, difficulty, verified）
-- CaseRecord: 案例记录（id, caseNumber, title, diagnosis, resolution, result）
 
 【关系类型】
-- OWNS: Device -> Component（设备拥有部件）
-- HAS_FAULT: Device -> Fault（设备发生故障）
-- CAUSES: Component -> Fault（部件导致故障）
-- HAS_SOLUTION: Fault -> Solution（故障有解决方案）
-- RECORDED: CaseRecord -> Fault（案例记录了故障）
+- OWNS: Device -> Component
+- CAUSES: Component -> Fault
+- HAS_SOLUTION: Fault -> Solution
+- HAS_FAULT: Device -> Fault（历史故障记录）
 """
 
 import logging
@@ -29,67 +28,125 @@ from config.settings import get_settings
 
 
 class DiagnosisPath(BaseModel):
-    """诊断路径模型 - 设备->部件->故障->解决方案"""
-    component_id: Optional[str] = Field(default=None, description="部件ID")
-    component_name: Optional[str] = Field(default=None, description="部件名称")
-    fault_id: Optional[str] = Field(default=None, description="故障ID")
-    fault_name: Optional[str] = Field(default=None, description="故障名称")
-    fault_severity: Optional[str] = Field(default=None, description="故障严重程度")
-    solution_id: Optional[str] = Field(default=None, description="解决方案ID")
-    solution_title: Optional[str] = Field(default=None, description="解决方案标题")
-    estimated_time: Optional[int] = Field(default=None, description="预计耗时（分钟）")
-    verified: Optional[bool] = Field(default=None, description="是否已验证")
+    """诊断路径模型，与 Java DiagnosisPathVO 字段对齐"""
+    device_id: Optional[str] = Field(default=None)
+    device_name: Optional[str] = Field(default=None)
+    component_id: Optional[str] = Field(default=None)
+    component_name: Optional[str] = Field(default=None)
+    fault_id: Optional[str] = Field(default=None)
+    fault_name: Optional[str] = Field(default=None)
+    fault_severity: Optional[str] = Field(default=None)
+    solution_id: Optional[str] = Field(default=None)
+    solution_title: Optional[str] = Field(default=None)
+    estimated_time: Optional[int] = Field(default=None)
+    verified: Optional[bool] = Field(default=None)
+    has_history: bool = Field(default=False, description="设备是否有该故障的历史记录")
+    fault_score: Optional[float] = Field(default=None, description="故障向量匹配分数")
+    component_score: Optional[float] = Field(default=None, description="部件向量匹配分数")
+    path_text: Optional[str] = Field(default=None, description="可读路径文本")
 
 
 class DeviceInfo(BaseModel):
-    """设备信息模型"""
-    id: str = Field(description="设备ID")
-    name: str = Field(description="设备名称")
-    code: Optional[str] = Field(default=None, description="设备编码")
-    model: Optional[str] = Field(default=None, description="设备型号")
-    location: Optional[str] = Field(default=None, description="存放位置")
-    manufacturer: Optional[str] = Field(default=None, description="制造商")
+    id: str
+    name: str
+    code: Optional[str] = None
+    model: Optional[str] = None
+    location: Optional[str] = None
+    manufacturer: Optional[str] = None
 
 
 class ComponentInfo(BaseModel):
-    """部件信息模型"""
-    id: str = Field(description="部件ID")
-    name: str = Field(description="部件名称")
-    part_number: Optional[str] = Field(default=None, description="部件编号")
-    specification: Optional[str] = Field(default=None, description="规格参数")
-    supplier: Optional[str] = Field(default=None, description="供应商")
-    lifecycle: Optional[str] = Field(default=None, description="生命周期")
-    unit_price: Optional[float] = Field(default=None, description="单价")
+    id: str
+    name: str
+    part_number: Optional[str] = None
+    specification: Optional[str] = None
+    supplier: Optional[str] = None
+    lifecycle: Optional[str] = None
+    unit_price: Optional[float] = None
 
 
 class FaultInfo(BaseModel):
-    """故障信息模型"""
-    id: str = Field(description="故障ID")
-    code: Optional[str] = Field(default=None, description="故障编码")
-    name: str = Field(description="故障名称")
-    description: Optional[str] = Field(default=None, description="故障描述")
-    severity: Optional[str] = Field(default=None, description="严重程度")
-    category: Optional[str] = Field(default=None, description="故障类别")
+    id: str
+    name: str
+    code: Optional[str] = None
+    description: Optional[str] = None
+    severity: Optional[str] = None
+    category: Optional[str] = None
 
 
 class SolutionInfo(BaseModel):
-    """解决方案信息模型"""
-    id: str = Field(description="解决方案ID")
-    code: Optional[str] = Field(default=None, description="解决方案编码")
-    title: str = Field(description="解决标题")
-    description: Optional[str] = Field(default=None, description="详细描述")
-    tools_required: Optional[str] = Field(default=None, description="所需工具")
-    estimated_time: Optional[int] = Field(default=None, description="预计耗时（分钟）")
-    difficulty: Optional[str] = Field(default=None, description="难度")
-    verified: Optional[bool] = Field(default=None, description="是否已验证")
+    id: str
+    title: str
+    code: Optional[str] = None
+    description: Optional[str] = None
+    tools_required: Optional[str] = None
+    estimated_time: Optional[int] = None
+    difficulty: Optional[str] = None
+    verified: Optional[bool] = None
+
+
+_FIELDS = ("deviceId,deviceName,componentId,componentName,"
+           "faultId,faultName,faultSeverity,"
+           "solutionId,solutionTitle,estimatedTime,verified,"
+           "hasHistory")
+_PATH_FIELDS = _FIELDS
+
+
+def _map_path(record: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "device_id": record.get("deviceId"),
+        "device_name": record.get("deviceName"),
+        "component_id": record.get("componentId"),
+        "component_name": record.get("componentName"),
+        "fault_id": record.get("faultId"),
+        "fault_name": record.get("faultName"),
+        "fault_severity": record.get("faultSeverity"),
+        "solution_id": record.get("solutionId"),
+        "solution_title": record.get("solutionTitle"),
+        "estimated_time": record.get("estimatedTime"),
+        "verified": record.get("verified"),
+        "has_history": bool(record.get("hasHistory", False)),
+    }
+
+
+def _build_path_text(row: Dict[str, Any]) -> str:
+    parts = []
+    if row.get("device_name"):
+        parts.append(row["device_name"])
+    if row.get("component_name"):
+        parts.append(f"OWNS->{row['component_name']}" if parts else row["component_name"])
+    if row.get("fault_name"):
+        parts.append(f"CAUSES->{row['fault_name']}" if parts else row["fault_name"])
+    if row.get("solution_title"):
+        parts.append(f"HAS_SOLUTION->{row['solution_title']}" if parts else row["solution_title"])
+    return " -> ".join(parts)
+
+
+_BASE_CYPHER = """
+MATCH (d:Device)-[:OWNS]->(c:Component)-[:CAUSES]->(f:Fault)
+WHERE {where_clause}
+OPTIONAL MATCH (f)-[:HAS_SOLUTION]->(s:Solution)
+OPTIONAL MATCH (d)-[hf:HAS_FAULT]->(f)
+RETURN d.id AS deviceId, d.name AS deviceName,
+       c.id AS componentId, c.name AS componentName,
+       f.id AS faultId, f.name AS faultName, f.severity AS faultSeverity,
+       s.id AS solutionId, s.title AS solutionTitle,
+       s.estimated_time AS estimatedTime, s.verified AS verified,
+       hf IS NOT NULL AS hasHistory
+ORDER BY hasHistory DESC, s.verified DESC, s.estimated_time ASC
+SKIP $skip LIMIT $limit
+"""
+
+_COUNT_CYPHER = """
+MATCH (d:Device)-[:OWNS]->(c:Component)-[:CAUSES]->(f:Fault)
+WHERE {where_clause}
+OPTIONAL MATCH (f)-[:HAS_SOLUTION]->(s:Solution)
+RETURN count(*) AS total
+"""
 
 
 class GraphService:
-    """
-    Neo4j 图数据库服务
-
-    提供知识图谱查询和关系管理功能
-    """
+    """Neo4j 图数据库只读查询服务，查询逻辑与 Java GraphQueryServiceImpl 对齐。"""
 
     def __init__(self):
         self.settings = get_settings()
@@ -97,278 +154,310 @@ class GraphService:
             self.settings.neo4j_uri,
             auth=(self.settings.neo4j_username, self.settings.neo4j_password)
         )
+        self._database = self.settings.neo4j_database
 
     def close(self):
-        """关闭数据库连接"""
         if self.driver:
             self.driver.close()
 
     def _execute_query(self, cypher: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """执行查询并返回结果列表"""
-        with self.driver.session(database=self.settings.neo4j_database) as session:
+        with self.driver.session(database=self._database) as session:
             result = session.run(cypher, params)
             return [dict(record) for record in result]
 
-    def _execute_single(self, cypher: str, params: Dict[str, Any]) -> Optional[Any]:
-        """执行查询并返回单个结果"""
-        with self.driver.session(database=self.settings.neo4j_database) as session:
+    def _execute_single(self, cypher: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        with self.driver.session(database=self._database) as session:
             result = session.run(cypher, params)
             record = result.single()
             return dict(record) if record else None
 
-    # ==================== 核心诊断路径查询 ====================
+    # ==================== 向量检索 ====================
 
-    def query_diagnosis_path(
-        self,
-        keyword: str = None,
-        fault_name: str = None,
-        limit: int = 10
-    ) -> List[DiagnosisPath]:
-        """
-        查询诊断路径
-
-        根据设备名称关键字和故障名称，查询完整诊断路径：
-        Device -> Component -> Fault -> Solution
-
-        与 Java 端 GraphQueryServiceImpl.findDiagnosisPath() 对应。
-
-        Args:
-            keyword: 设备名称关键字（模糊匹配 name/code/model/location）
-            fault_name: 故障名称关键字（模糊匹配）
-            limit: 返回结果数量限制
-
-        Returns:
-            诊断路径列表
-        """
-        # 先搜索匹配的设备
-        devices = self.find_devices(keyword=keyword, limit=limit)
-
-        diagnosis_paths = []
-        for device in devices:
-            paths = self._query_path_for_device(device["id"], fault_name, limit)
-            diagnosis_paths.extend(paths)
-
-        return [DiagnosisPath(**p) for p in diagnosis_paths]
-
-    def _query_path_for_device(
-        self,
-        device_id: str,
-        fault_name: str = None,
-        limit: int = 10
+    def search_components_by_embedding(
+        self, embedding: List[float], limit: int = 20, min_score: float = 0.50
     ) -> List[Dict[str, Any]]:
-        """
-        查询指定设备的诊断路径
-
-        对应 Java 端 GraphQueryServiceImpl.getList() 方法的 Cypher 查询。
-        """
+        """通过 Neo4j 向量索引检索部件。"""
         cypher = """
-            MATCH (d:Device {id: $deviceId})
-                  -[:OWNS]->(c:Component)
-                  -[:CAUSES]->(f:Fault)
-                  -[:HAS_SOLUTION]->(s:Solution)
-            WHERE $faultName IS NULL
-               OR $faultName = ''
-               OR f.name CONTAINS $faultName
-            RETURN c.id AS componentId,
-                   c.name AS componentName,
-                   f.id AS faultId,
-                   f.name AS faultName,
-                   f.severity AS faultSeverity,
-                   s.id AS solutionId,
-                   s.title AS solutionTitle,
-                   s.estimated_time AS estimatedTime,
-                   s.verified AS verified
-            ORDER BY s.verified DESC, s.estimated_time ASC
-            LIMIT $limit
-        """
-
-        # 处理 estimatedTime 和 verified 可能为 None 的情况
-        results = self._execute_query(cypher, {
-            "deviceId": device_id,
-            "faultName": fault_name or "",
-            "limit": limit
-        })
-
-        # 标准化字段名和类型
-        standardized = []
-        for r in results:
-            standardized.append({
-                "component_id": r.get("componentId"),
-                "component_name": r.get("componentName"),
-                "fault_id": r.get("faultId"),
-                "fault_name": r.get("faultName"),
-                "fault_severity": r.get("faultSeverity"),
-                "solution_id": r.get("solutionId"),
-                "solution_title": r.get("solutionTitle"),
-                "estimated_time": r.get("estimatedTime"),
-                "verified": r.get("verified")
-            })
-        return standardized
-
-    # ==================== 设备管理 ====================
-
-    def find_devices(
-        self,
-        keyword: str = None,
-        skip: int = 0,
-        limit: int = 10
-    ) -> List[Dict[str, Any]]:
-        """
-        按关键字搜索设备
-
-        对应 Java 端 DeviceRepository.getDevices()。
-        """
-        cypher = """
-            MATCH (d:Device)
-            WHERE $keyword IS NULL
-               OR $keyword = ''
-               OR d.name CONTAINS $keyword
-               OR d.code CONTAINS $keyword
-               OR d.model CONTAINS $keyword
-               OR d.location CONTAINS $keyword
-            RETURN d.id AS id,
-                   d.name AS name,
-                   d.code AS code,
-                   d.model AS model,
-                   d.location AS location,
-                   d.manufacturer AS manufacturer
-            ORDER BY d.name ASC
-            SKIP $skip
-            LIMIT $limit
+            CALL db.index.vector.queryNodes('component_embedding_index', $limit, $embedding)
+            YIELD node AS c, score
+            WHERE score >= $minScore
+            RETURN c.id AS id, c.name AS name, c.part_number AS partNumber,
+                   c.specification AS specification, c.supplier AS supplier,
+                   c.lifecycle AS lifecycle, c.unit_price AS unitPrice, score
+            ORDER BY score DESC
         """
         return self._execute_query(cypher, {
-            "keyword": keyword or "",
-            "skip": skip,
-            "limit": limit
+            "embedding": embedding, "limit": limit, "minScore": min_score
+        })
+
+    def search_faults_by_embedding(
+        self, embedding: List[float], limit: int = 20, min_score: float = 0.80
+    ) -> List[Dict[str, Any]]:
+        """通过 Neo4j 向量索引检索故障。"""
+        cypher = """
+            CALL db.index.vector.queryNodes('fault_embedding_index', $limit, $embedding)
+            YIELD node AS f, score
+            WHERE score >= $minScore
+            RETURN f.id AS id, f.name AS name, f.description AS description,
+                   f.category AS category, f.severity AS severity, score
+            ORDER BY score DESC
+        """
+        return self._execute_query(cypher, {
+            "embedding": embedding, "limit": limit, "minScore": min_score
+        })
+
+    # ==================== 设备搜索 ====================
+
+    def find_devices(
+        self, keyword: str = None, skip: int = 0, limit: int = 1000
+    ) -> List[Dict[str, Any]]:
+        cypher = """
+            MATCH (d:Device)
+            WHERE $keyword IS NULL OR $keyword = ''
+               OR d.name CONTAINS $keyword OR d.code CONTAINS $keyword
+               OR d.model CONTAINS $keyword OR d.location CONTAINS $keyword
+            RETURN d.id AS id, d.name AS name, d.code AS code,
+                   d.model AS model, d.location AS location, d.manufacturer AS manufacturer
+            ORDER BY d.name ASC
+            SKIP $skip LIMIT $limit
+        """
+        return self._execute_query(cypher, {
+            "keyword": keyword or "", "skip": skip, "limit": limit
         })
 
     def get_device_overview(self, device_id: str) -> Optional[Dict[str, Any]]:
-        """
-        获取设备概览信息
-
-        对应 Java 端 DeviceRepository.getDeviceOverview()。
-        """
         cypher = """
             MATCH (d:Device {id: $deviceId})
             OPTIONAL MATCH (d)-[:OWNS]->(c:Component)
             WITH d, count(DISTINCT c) AS componentCount
             OPTIONAL MATCH (d)-[:HAS_FAULT]->(f:Fault)
-            RETURN d.id AS deviceId,
-                   d.name AS deviceName,
-                   d.code AS code,
-                   d.model AS model,
-                   d.location AS location,
-                   d.manufacturer AS manufacturer,
-                   componentCount,
-                   count(DISTINCT f) AS faultCount
+            RETURN d.id AS deviceId, d.name AS deviceName,
+                   d.code AS code, d.model AS model,
+                   d.location AS location, d.manufacturer AS manufacturer,
+                   componentCount, count(DISTINCT f) AS faultCount
         """
         return self._execute_single(cypher, {"deviceId": device_id})
 
-    # ==================== 部件管理 ====================
+    # ==================== 部件/故障 简单查询 ====================
 
     def find_components_by_device(
-        self,
-        device_id: str,
-        component_name: str = None,
-        skip: int = 0,
-        limit: int = 10
+        self, device_id: str, component_name: str = None,
+        skip: int = 0, limit: int = 10
     ) -> List[Dict[str, Any]]:
-        """
-        查询设备拥有的部件
-
-        对应 Java 端 DeviceRepository.getComponentRecords()。
-        """
         cypher = """
             MATCH (d:Device {id: $deviceId})-[:OWNS]->(c:Component)
-            WHERE $componentName IS NULL
-               OR $componentName = ''
+            WHERE $componentName IS NULL OR $componentName = ''
                OR c.name CONTAINS $componentName
-            RETURN c.id AS id,
-                   c.name AS name,
-                   c.part_number AS partNumber,
-                   c.specification AS specification,
-                   c.supplier AS supplier,
-                   c.lifecycle AS lifecycle,
-                   c.unit_price AS unitPrice
-            ORDER BY c.name ASC
-            SKIP $skip
-            LIMIT $limit
+            RETURN c.id AS id, c.name AS name, c.part_number AS partNumber,
+                   c.specification AS specification, c.supplier AS supplier,
+                   c.lifecycle AS lifecycle, c.unit_price AS unitPrice
+            ORDER BY c.name ASC SKIP $skip LIMIT $limit
         """
         return self._execute_query(cypher, {
-            "deviceId": device_id,
-            "componentName": component_name or "",
-            "skip": skip,
-            "limit": limit
+            "deviceId": device_id, "componentName": component_name or "",
+            "skip": skip, "limit": limit
         })
 
     def find_faults_by_component(
-        self,
-        component_id: str,
-        fault_name: str = None,
-        limit: int = 10
+        self, component_id: str, fault_name: str = None, limit: int = 10
     ) -> List[Dict[str, Any]]:
-        """
-        查询部件导致的故障
-
-        用于分析：给定部件会出现哪些故障。
-        """
         cypher = """
             MATCH (c:Component {id: $componentId})-[:CAUSES]->(f:Fault)
-            WHERE $faultName IS NULL
-               OR $faultName = ''
+            WHERE $faultName IS NULL OR $faultName = ''
                OR f.name CONTAINS $faultName
-            RETURN f.id AS id,
-                   f.code AS code,
-                   f.name AS name,
-                   f.description AS description,
-                   f.severity AS severity,
-                   f.category AS category
+            RETURN f.id AS id, f.code AS code, f.name AS name,
+                   f.description AS description, f.severity AS severity, f.category AS category
             LIMIT $limit
         """
         return self._execute_query(cypher, {
-            "componentId": component_id,
-            "faultName": fault_name or "",
-            "limit": limit
+            "componentId": component_id, "faultName": fault_name or "", "limit": limit
         })
 
-    # ==================== 故障管理 ====================
-
     def find_solutions_by_fault(
-        self,
-        fault_id: str,
-        verified_only: bool = False,
-        limit: int = 10
+        self, fault_id: str, verified_only: bool = False, limit: int = 10
     ) -> List[Dict[str, Any]]:
-        """
-        查询故障的解决方案
-
-        对应 Java 端 Fault 实体的 solutions 关系。
-        """
-        cypher = """
-            MATCH (f:Fault {id: $faultId})-[:HAS_SOLUTION]->(s:Solution)
-            """ + ("WHERE s.verified = true" if verified_only else "") + """
-            RETURN s.id AS id,
-                   s.code AS code,
-                   s.title AS title,
-                   s.description AS description,
-                   s.tools_required AS toolsRequired,
-                   s.estimated_time AS estimatedTime,
-                   s.difficulty AS difficulty,
+        verify_clause = "WHERE s.verified = true" if verified_only else ""
+        cypher = f"""
+            MATCH (f:Fault {{id: $faultId}})-[:HAS_SOLUTION]->(s:Solution)
+            {verify_clause}
+            RETURN s.id AS id, s.code AS code, s.title AS title,
+                   s.description AS description, s.tools_required AS toolsRequired,
+                   s.estimated_time AS estimatedTime, s.difficulty AS difficulty,
                    s.verified AS verified
             ORDER BY s.verified DESC, s.estimated_time ASC
             LIMIT $limit
         """
-        return self._execute_query(cypher, {
-            "faultId": fault_id,
-            "limit": limit
-        })
+        return self._execute_query(cypher, {"faultId": fault_id, "limit": limit})
 
-# ==================== 单例模式 ====================
+    # ==================== 节点存在性检查 ====================
+
+    def fault_node_exists(self, name: str) -> bool:
+        """检查指定名称的 Fault 节点是否存在于图谱中（模糊匹配）。"""
+        result = self._execute_query(
+            "MATCH (f:Fault) WHERE f.name CONTAINS $name RETURN f.name LIMIT 1",
+            {"name": name}
+        )
+        return len(result) > 0
+
+    def solution_node_exists(self, title: str) -> bool:
+        """检查指定标题的 Solution 节点是否存在于图谱中（模糊匹配）。"""
+        result = self._execute_query(
+            "MATCH (s:Solution) WHERE s.title CONTAINS $title RETURN s.title LIMIT 1",
+            {"title": title}
+        )
+        return len(result) > 0
+
+    # ==================== 核心：5分支诊断路径查询 ====================
+
+    def find_diagnosis_paths(
+        self,
+        keyword: str = None,
+        component_ids: List[str] = None,
+        fault_ids: List[str] = None,
+        component_score_map: Dict[str, float] = None,
+        fault_score_map: Dict[str, float] = None,
+        page: int = 0,
+        size: int = 5
+    ) -> Dict[str, Any]:
+        """
+        分页查询诊断路径，与 Java GraphQueryServiceImpl.findDiagnosisPaths() 对齐。
+
+        调用方（工具层）负责：
+        1. 将 component_description/fault_description 转为向量
+        2. 调用 search_*_by_embedding() 获取匹配的 ID 和分数
+        3. 将结果传入本方法
+
+        5 分支路由：
+        1. 设备 + 部件 + 故障
+        2. 部件 + 故障
+        3. 只有部件
+        4. 设备 + 故障
+        5. 只有故障
+
+        Returns:
+            {"records": [...], "total": N, "page": page, "size": size}
+        """
+        safe_page = max(page, 0)
+        safe_size = max(size, 5)
+        skip = safe_page * safe_size
+        comp_ids = component_ids or []
+        flt_ids = fault_ids or []
+        comp_scores = component_score_map or {}
+        flt_scores = fault_score_map or {}
+
+        if not comp_ids and not flt_ids:
+            return {"records": [], "total": 0, "page": safe_page, "size": safe_size}
+
+        # 设备匹配
+        device_ids = []
+        if self._has_text(keyword):
+            devices = self.find_devices(keyword=keyword)
+            device_ids = [d["id"] for d in devices]
+
+        has_device = len(device_ids) > 0
+        has_component = len(comp_ids) > 0
+        has_fault = len(flt_ids) > 0
+
+        if not has_component and not has_fault:
+            return {"records": [], "total": 0, "page": safe_page, "size": safe_size}
+
+        # 5 分支路由
+        if has_device and has_component and has_fault:
+            records_raw, total = self._branch_device_component_fault(
+                device_ids, comp_ids, flt_ids, skip, safe_size
+            )
+        elif has_component and has_fault:
+            records_raw, total = self._branch_component_fault(
+                comp_ids, flt_ids, skip, safe_size
+            )
+        elif has_component:
+            records_raw, total = self._branch_component_only(
+                comp_ids, skip, safe_size
+            )
+        elif has_device:
+            records_raw, total = self._branch_device_fault(
+                device_ids, flt_ids, skip, safe_size
+            )
+        else:
+            records_raw, total = self._branch_fault_only(
+                flt_ids, skip, safe_size
+            )
+
+        records: List[Dict[str, Any]] = []
+        for r in records_raw:
+            r["fault_score"] = flt_scores.get(r.get("fault_id"))
+            r["component_score"] = comp_scores.get(r.get("component_id"))
+            r["path_text"] = _build_path_text(r)
+            records.append(r)
+
+        logger.info(
+            f"[graph] find_diagnosis_paths keyword={keyword} "
+            f"comp_ids={len(comp_ids)} fault_ids={len(flt_ids)} "
+            f"found={len(records)} total={total}"
+        )
+        return {"records": records, "total": total, "page": safe_page, "size": safe_size}
+
+    # ---- 5 分支实现 ----
+
+    def _branch_device_component_fault(
+        self, device_ids, component_ids, fault_ids, skip, limit
+    ):
+        where = "d.id IN $deviceIds AND c.id IN $componentIds AND f.id IN $faultIds"
+        cypher = _BASE_CYPHER.replace("{where_clause}", where)
+        count_cypher = _COUNT_CYPHER.replace("{where_clause}", where)
+        params = {"deviceIds": device_ids, "componentIds": component_ids,
+                  "faultIds": fault_ids, "skip": skip, "limit": limit}
+        records = self._execute_query(cypher, params)
+        total = self._execute_single(count_cypher, params)
+        return records, total["total"] if total else 0
+
+    def _branch_component_fault(self, component_ids, fault_ids, skip, limit):
+        where = "c.id IN $componentIds AND f.id IN $faultIds"
+        cypher = _BASE_CYPHER.replace("{where_clause}", where)
+        count_cypher = _COUNT_CYPHER.replace("{where_clause}", where)
+        params = {"componentIds": component_ids, "faultIds": fault_ids,
+                  "skip": skip, "limit": limit}
+        records = self._execute_query(cypher, params)
+        total = self._execute_single(count_cypher, params)
+        return records, total["total"] if total else 0
+
+    def _branch_component_only(self, component_ids, skip, limit):
+        where = "c.id IN $componentIds"
+        cypher = _BASE_CYPHER.replace("{where_clause}", where)
+        count_cypher = _COUNT_CYPHER.replace("{where_clause}", where)
+        params = {"componentIds": component_ids, "skip": skip, "limit": limit}
+        records = self._execute_query(cypher, params)
+        total = self._execute_single(count_cypher, params)
+        return records, total["total"] if total else 0
+
+    def _branch_device_fault(self, device_ids, fault_ids, skip, limit):
+        where = "d.id IN $deviceIds AND f.id IN $faultIds"
+        cypher = _BASE_CYPHER.replace("{where_clause}", where)
+        count_cypher = _COUNT_CYPHER.replace("{where_clause}", where)
+        params = {"deviceIds": device_ids, "faultIds": fault_ids,
+                  "skip": skip, "limit": limit}
+        records = self._execute_query(cypher, params)
+        total = self._execute_single(count_cypher, params)
+        return records, total["total"] if total else 0
+
+    def _branch_fault_only(self, fault_ids, skip, limit):
+        where = "f.id IN $faultIds"
+        cypher = _BASE_CYPHER.replace("{where_clause}", where)
+        count_cypher = _COUNT_CYPHER.replace("{where_clause}", where)
+        params = {"faultIds": fault_ids, "skip": skip, "limit": limit}
+        records = self._execute_query(cypher, params)
+        total = self._execute_single(count_cypher, params)
+        return records, total["total"] if total else 0
+
+    @staticmethod
+    def _has_text(value: str) -> bool:
+        return value is not None and value.strip() != ""
+
+
 _graph_service: Optional[GraphService] = None
 
 
 def get_graph_service() -> GraphService:
-    """获取图数据库服务单例"""
     global _graph_service
     if _graph_service is None:
         _graph_service = GraphService()

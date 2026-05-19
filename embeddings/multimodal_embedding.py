@@ -2,7 +2,7 @@
 多模态统一向量化模块
 
 聚合文本向量化和图像向量化，对外提供统一入口。
-调用方不需要关心底层是调 text-embedding-v4 还是 multimodal-embedding-v1。
+底层统一使用 qwen2.5-vl-embedding，文本和图片向量在同一语义空间。
 
 【与架构文档的对应关系】
 - 位置：embeddings/multimodal_embedding.py
@@ -11,8 +11,8 @@
 
 【设计思路】
 - 门面模式（Facade）：对外一个 embed()，内部分发到 TextEmbedding / ImageEmbedding
+- 共用 qwen2.5-vl-embedding 模型，文本和图片向量维度统一（1024）
 - 各自维护自己的 Redis 缓存，不重复造轮子
-- 文本和图片的向量维度可能不同（分别由各自的模型决定），在返回结果中标注
 
 【使用示例】
 ```python

@@ -15,9 +15,6 @@ FastAPI Web 服务入口，HTTP 接口定义、请求路由、参数校验。所
 | `/ai/memory/consolidate` | POST | 记忆整理（function calling + 向量存储） | **已实现** |
 | `/ai/memory/realtime_update` | POST | 实时记忆更新（轻量级检测） | **已实现** |
 | `/ai/memory/search_facts` | POST | 事实记忆向量检索 | **已实现** |
-| `/api/asr/health` | GET | ASR 服务健康检查 | **已实现** |
-| `/api/asr/transcribe` | POST | 音频转写（非流式） | **已实现** |
-| `/api/asr/transcribe-stream` | POST | 音频转写（SSE 流式） | **已实现** |
 
 ### 已移除的接口
 
@@ -46,7 +43,6 @@ FastAPI Web 服务入口，HTTP 接口定义、请求路由、参数校验。所
 - `KnowledgeImportResponse` — file_name / total_pages / text_count / image_count / table_count / sections / extraction_summary
 - `KnowledgeSearchResponse` — data(VectorSearchResult列表) / total / query_time_ms
 - `MemoryConsolidateResponse` — session_id / summary(MemorySummary) / original_count / consolidated_at
-- `ASRResponse` — language / language_probability / duration / text / segments（语音转写结果）
 
 `ChatResponse.verification` 字段包含 3 层校验结果：
 
@@ -109,15 +105,13 @@ data: {"event": "error",         "data": {"message": "..."}}
 api/main.py
     ├── schemas/request.py            — 请求模型
     ├── schemas/response.py           — 响应模型
-    ├── schemas/asr.py                — ASR 响应模型
     ├── agents/fix_agent.py           — 统一推理（单例，惰性创建）
     ├── agents/review_agent.py        — 3层确定性校验 + 内联标记定位
     ├── agents/memory_agent.py        — 记忆整理
     ├── agents/realtime_memory_agent.py — 实时记忆更新
     ├── services/vector_service.py    — 向量检索（knowledge/search）
     ├── services/knowledge_service.py — 文档导入（knowledge/import）
-    ├── services/asr_service.py       — 语音识别（ASR 转写）
-    └── config/asr_settings.py        — ASR 配置
+
 ```
 
 ## 与 Java 后端的交互
@@ -131,9 +125,6 @@ Java Backend                    FixAgent (Python)
   POST /ai/memory/consolidate      → MemoryAgent → MemoryConsolidateResponse
   POST /ai/memory/realtime_update   → RealtimeMemoryAgent → 更新结果
   POST /ai/memory/search_facts      → VectorService → 相关事实列表
-  GET  /api/asr/health              → ASR 模型状态
-  POST /api/asr/transcribe          → AsrService → ASRResponse
-  POST /api/asr/transcribe-stream   → AsrService → SSE 流式事件
 ```
 
 ## 错误处理
@@ -159,7 +150,7 @@ uvicorn api.main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 api/
 ├── __init__.py
-└── main.py          # FastAPI 入口，含 /ai/* 和 /api/asr/* 所有端点
+└── main.py          # FastAPI 入口，含 /ai/* 所有端点
 ```
 
 ## 注意事项

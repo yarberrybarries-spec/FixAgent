@@ -363,6 +363,79 @@ class GraphService:
             "limit": limit
         })
 
+    # ==================== 图片向量检索 ====================
+
+    def search_by_image_vector(
+        self,
+        entity_type: str,
+        vector: List[float],
+        limit: int = 5,
+        min_score: float = 0.5
+    ) -> List[Dict[str, Any]]:
+        index_name = f"{entity_type.lower()}_multimodal_index"
+        cypher = """
+            CALL db.index.vector.queryNodes($indexName, $limit, $vector)
+            YIELD node, score
+            WHERE score >= $minScore
+            RETURN node.id AS id,
+                   node.name AS name,
+                   node.image_urls AS imageUrls,
+                   score
+            ORDER BY score DESC
+        """
+        return self._execute_query(cypher, {
+            "indexName": index_name,
+            "limit": limit,
+            "vector": vector,
+            "minScore": min_score
+        })
+
+    def query_diagnosis_by_image_vector(
+        self,
+        vector: List[float],
+        limit: int = 10,
+        min_score: float = 0.5
+    ) -> List[DiagnosisPath]:
+        cypher = """
+            CALL db.index.vector.queryNodes('fault_multimodal_index', $limit, $vector)
+            YIELD node AS f, score
+            WHERE score >= $minScore
+            OPTIONAL MATCH (c:Component)-[:CAUSES]->(f)
+            OPTIONAL MATCH (f)-[:HAS_SOLUTION]->(s:Solution)
+            RETURN c.id AS componentId,
+                   c.name AS componentName,
+                   f.id AS faultId,
+                   f.name AS faultName,
+                   f.severity AS faultSeverity,
+                   f.image_urls AS faultImageUrls,
+                   s.id AS solutionId,
+                   s.title AS solutionTitle,
+                   s.estimated_time AS estimatedTime,
+                   s.verified AS verified,
+                   score AS imageScore
+            ORDER BY score DESC, s.verified DESC
+            LIMIT $limit
+        """
+        results = self._execute_query(cypher, {
+            "limit": limit,
+            "vector": vector,
+            "minScore": min_score
+        })
+        paths = []
+        for r in results:
+            paths.append(DiagnosisPath(
+                component_id=r.get("componentId"),
+                component_name=r.get("componentName"),
+                fault_id=r.get("faultId"),
+                fault_name=r.get("faultName"),
+                fault_severity=r.get("faultSeverity"),
+                solution_id=r.get("solutionId"),
+                solution_title=r.get("solutionTitle"),
+                estimated_time=r.get("estimatedTime"),
+                verified=r.get("verified")
+            ))
+        return paths
+
 # ==================== 单例模式 ====================
 _graph_service: Optional[GraphService] = None
 

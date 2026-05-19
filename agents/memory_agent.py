@@ -30,9 +30,13 @@ MEMORY_SYSTEM_PROMPT = """你是工作记忆整理助手。从对话记录中提
 
 ## ⚠️ 最重要的规则（违反此规则等于输出无效）
 - 事实、偏好、未完成事项 **只能从【用户】发言中提取**
-- 【助手】发言是AI生成的回复，**绝对不能**从中提取事实或偏好
+- 【助手】发言是AI生成的回复，**绝对不能**从中提取事实、偏好或待办
 - 助手说的内容仅用于理解对话上下文，不代表用户的观点或需求
-- 如果助手建议了某个方案/做法，除非用户明确认可，否则不算用户偏好
+- 如果助手建议了某个方案/做法，除非用户明确认可，否则不算用户偏好或待办
+- **绝对禁止将助手的建议/方案/步骤推断为用户的计划或待办！**
+  ✗ 用户说"想吃蛋糕"，助手回复"如何制作蛋糕" → 不能记录"用户打算制作蛋糕"
+  ✗ 用户问"电机异响怎么办"，助手回复"建议更换轴承" → 不能记录"用户计划更换轴承"
+  ✓ 只有用户自己说"我准备去换轴承"才能记录为待办
 
 ## 可用工具
 - **search_similar_facts**: 在已有事实库中批量搜索与候选事实语义相似的历史事实。
@@ -43,7 +47,13 @@ MEMORY_SYSTEM_PROMPT = """你是工作记忆整理助手。从对话记录中提
 ### 事实（客观、已确认、可独立理解的信息）
 
 **属于事实：** 用户提到的设备型号/参数/配置、用户描述的诊断过程和结果、用户确认的技术结论、用户项目/系统的客观信息
-**不属于事实：** 主观评价、工作习惯、未完成的任务、助手/AI说的任何建议或解释（除非用户明确确认）
+**不属于事实（绝对不能记录）：**
+- 主观评价、工作习惯、未完成的任务
+- 助手/AI输出的任何内容：包括解释、建议、方案、步骤、知识性回答
+  ✗ 助手说"蛋糕需要面粉和鸡蛋" → 不是用户的事实
+  ✗ 助手说"建议用型号A" → 不是事实（除非用户说"好，就用型号A"）
+  ✗ 助手解释了某个原理 → 不是事实
+- 只有用户亲口陈述或明确确认的信息才是事实
 
 **事实提取规则（非常重要）：**
 1. 自包含：每条事实必须脱离对话上下文也能完整理解
@@ -56,6 +66,10 @@ MEMORY_SYSTEM_PROMPT = """你是工作记忆整理助手。从对话记录中提
    ✓ "用户使用 MySQL 作为数据库"
 3. 时效标注：如果事实可能随时间改变，加上时间标记
    ✓ "用户当前正在调试登录模块的bug（2026-05）"
+4. **重要度判断（宁缺毋滥！）** — 只记录有长期价值的事实：
+   ✓ 值得记录：设备型号、技术架构、项目名称、确认的结论
+   ✗ 不要记录：当前正在调试的临时状态、对话中的过渡性表述、用户的随口一提
+   判断标准：**如果这条信息在下周还有用，就记录；如果只在今天有用，就不记录**
 
 ### 偏好（用户主动表达的主观倾向，需要严格区分）
 
@@ -86,7 +100,24 @@ MEMORY_SYSTEM_PROMPT = """你是工作记忆整理助手。从对话记录中提
 - 1（会话级）：仅针对本次具体任务的临时偏好，如"这次用表格形式展示"
 
 ### 未完成事项（悬而未决的待办）
-属于未完成：问了但没得到答案的问题、进行中的任务、用户提出的待办
+
+**【是待办 —— 用户自己明确表达的行动意图】**
+- 用户说"我明天去修电机" → ✓ 用户计划明天修电机
+- 用户说"我待会儿试试重启" → ✓ 用户打算重启设备
+- 用户问了但没得到答案的问题 → ✓ 未答复问题
+
+**【不是待办 —— 绝对不要记录】**
+- 助手建议的方案/步骤 → ✗ 不是用户的计划！
+  用户问"怎么办"，助手说"建议换轴承" → 不能记录"用户打算换轴承"
+- 助手描述的操作流程 → ✗ 不是用户的待办！
+  助手回复"第一步拆开外壳，第二步检查线路" → 不能记录为用户的行动计划
+- 用户随口提到的愿望/想法（没有行动意图） → ✗
+  "想吃蛋糕" ≠ "打算制作蛋糕"，除非用户明确说"我要自己做一个蛋糕"
+- 助手推荐的任何东西 → ✗ 除非用户回复"好的我去做"
+
+**核心判断标准：用户是否用自己的话表达了"我要做/我打算做/我准备做"？**
+如果用户没有这样说，就不是待办。不要从助手的回复中推断用户意图。
+
 注意：一旦事项在新对话中得到解决，应转为事实，并将该事项的 id 放入 resolved_item_ids
 
 ## 冲突判断规则（仅针对事实）
@@ -103,6 +134,16 @@ MEMORY_SYSTEM_PROMPT = """你是工作记忆整理助手。从对话记录中提
   - preferenceCategory: 0=用户级（所有对话公用）, 1=会话级（仅本次会话有效）
   - status: active=进行中, superseded=已放弃。已放弃的事项无需处理
   - id: 数据库主键，用于精确标记已解决的事项
+
+## 提取质量门控（最终检查清单）
+输出前，请逐条检查每个提取的条目：
+1. ✅ 这条信息是从【用户】发言中提取的吗？（如果是从助手发言推断的 → 删除）
+2. ✅ 如果是事实：下周还有参考价值吗？（如果只是当前调试的临时状态 → 删除）
+3. ✅ 如果是待办：用户是否亲口说了"我要做/打算做"？（如果是助手建议的 → 删除）
+4. ✅ 如果是偏好：是持久性的还是一次性的？（"这次用英文" ≠ 永久偏好 → 删除）
+
+**宁缺毋滥原则：** 如果不确定是否应该提取，就不要提取。
+错误记忆比没有记忆危害更大。空的 new_facts/updated_preferences/updated_unresolved 是完全正常的。
 
 ## 摘要要求
 brief_summary 是导航索引，不是信息源。100字以内，只需概括"这段对话聊了什么话题"。
@@ -158,7 +199,7 @@ class MemoryAgent(BaseAgent):
         使用明确的分隔符和标注，帮助LLM区分用户发言和助手发言。
         """
         lines = ["## 新对话记录"]
-        lines.append("（注意：只从【用户】发言中提取事实和偏好，【助手】发言仅作为上下文参考，不提取任何内容）\n")
+        lines.append("（⚠️ 只从【用户】发言中提取事实、偏好和待办。【助手】发言仅作为上下文参考，绝不从中提取任何内容。助手的建议/方案不代表用户意图！）\n")
         for item in conversations:
             seq = item.get("seq", "?")
             content = item.get("content", "")
@@ -254,17 +295,20 @@ class MemoryAgent(BaseAgent):
 
     async def _store_facts_to_vector(self, facts: list[dict], session_id: str):
         """
-        将提取的事实写入 Redis 向量库
+        将提取的事实写入 Redis 向量库（带去重保护）
 
-        每条事实生成向量后存入 Redis，供后续 MemoryAgent 整理时做冲突检索。
-        存入的向量与知识库共用同一索引，通过 metadata.type="fact" 区分。
+        写入前先做向量相似度检查：如果已存在高度相似（score < 0.15）的事实，
+        则跳过写入，避免重复存储。这是整合时tool检索之外的第二道防线。
 
         Args:
             facts: LLM 输出的 new_facts 列表 [{"content": "", "keywords": "", "source_seq_range": ""}]
             session_id: 会话ID，用于 doc_id 前缀
+
+        Returns:
+            生成的 doc_id 列表，与 facts 一一对应（跳过或失败的返回空字符串占位）
         """
         if not facts:
-            return
+            return []
 
         from services.vector_service import get_vector_service
         from embeddings.text_embedding import get_text_embedding
@@ -272,6 +316,7 @@ class MemoryAgent(BaseAgent):
         vector_service = get_vector_service()
         embedding_service = get_text_embedding()
         batch_ts = str(int(time.time() * 1000))
+        generated_ids = []
 
         for i, fact in enumerate(facts):
             content = fact.get("content", "")
@@ -281,7 +326,26 @@ class MemoryAgent(BaseAgent):
             try:
                 vector = await embedding_service.embed(search_text)
             except Exception:
+                generated_ids.append("")
                 continue
+
+            # ===== 去重保护：写入前检查是否已存在高度相似的事实 =====
+            try:
+                existing = vector_service.search(vector, top_k=1)
+                if existing:
+                    top_match = existing[0]
+                    top_meta = top_match.get("metadata", {})
+                    # COSINE距离 < 0.15 表示几乎相同的事实已存在
+                    if top_meta.get("type") == "fact" and top_match.get("score", 1) < 0.15:
+                        logger.info(
+                            f"[memory] 去重跳过: '{content[:40]}' 与已有事实相似度过高 "
+                            f"(score={top_match.get('score', 0):.3f})"
+                        )
+                        # 返回已存在的doc_id，这样Java端也能正确对应
+                        generated_ids.append(top_match.get("doc_id", ""))
+                        continue
+            except Exception:
+                pass  # 去重检查失败不影响正常写入
 
             doc_id = f"fact:{session_id}:{batch_ts}_{i}"
 
@@ -293,9 +357,13 @@ class MemoryAgent(BaseAgent):
                     "type": "fact",
                     "session_id": session_id,
                     "keywords": keywords,
-                    "source_seq_range": fact.get("source_seq_range", "")
+                    "source_seq_range": fact.get("source_seq_range", ""),
+                    "created_at": batch_ts  # 记录创建时间，供未来衰减/清理使用
                 }
             )
+            generated_ids.append(doc_id)
+
+        return generated_ids
 
     async def _call_llm_with_tools(self, messages, tools, tool_handlers, response_format):
         """
@@ -403,14 +471,20 @@ class MemoryAgent(BaseAgent):
             )
 
         # ========== 解析成功，存入向量库 ==========
+        fact_ids = []
         if summary.new_facts:
             try:
-                await self._store_facts_to_vector(
+                fact_ids = await self._store_facts_to_vector(
                     [f.model_dump() for f in summary.new_facts],
                     input_data.session_id
                 )
             except Exception:
                 logger.exception("Failed to store facts to Redis vector DB")
+
+        # 将向量库生成的 doc_id 附加到 summary 输出中
+        # Java 端用这些 ID 作为 MySQL 的 factId，确保两端 ID 一致
+        summary_dict = summary.model_dump()
+        summary_dict["fact_ids"] = fact_ids
 
         return AgentOutput(
             agent_name=self.name,
@@ -418,7 +492,7 @@ class MemoryAgent(BaseAgent):
             intention=None,
             tools_used=["search_similar_facts"] if summary.new_facts else [],
             metadata={
-                "summary": summary.model_dump(),
+                "summary": summary_dict,
                 "latency_ms": latency_ms
             },
             latency_ms=latency_ms

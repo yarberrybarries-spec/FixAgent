@@ -23,6 +23,19 @@ class Settings:
     neo4j_password = os.getenv("NEO4J_PASSWORD", "password")
     neo4j_database = os.getenv("NEO4J_DATABASE", "neo4j")
 
+    file_storage_backend = os.getenv("FILE_STORAGE_BACKEND", "local")
+    file_public_base_url = os.getenv("FILE_PUBLIC_BASE_URL", "/files")
+    local_file_storage_dir = os.getenv("LOCAL_FILE_STORAGE_DIR", "rag_files")
+    minio_public_base_url = os.getenv("MINIO_PUBLIC_BASE_URL", "")
+    minio_endpoint = os.getenv("MINIO_ENDPOINT", "")
+    minio_access_key = os.getenv("MINIO_ACCESS_KEY", "")
+    minio_secret_key = os.getenv("MINIO_SECRET_KEY", "")
+    minio_bucket = os.getenv("MINIO_BUCKET", "fixagent-rag")
+    minio_document_bucket = os.getenv("MINIO_DOCUMENT_BUCKET", minio_bucket)
+    minio_public_image_bucket = os.getenv("MINIO_PUBLIC_IMAGE_BUCKET", minio_bucket)
+    minio_secure = os.getenv("MINIO_SECURE", "false").lower() == "true"
+    image_summary_llm_enabled = os.getenv("IMAGE_SUMMARY_LLM_ENABLED", "false").lower() == "true"
+
 
 _settings = None
 

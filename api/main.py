@@ -1,9 +1,11 @@
 import json
 import logging
+import os
 from functools import partial
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 # 全局替换：所有 json.dumps 默认保留中文原文，避免 \uXXXX 乱码
 # 使用方法：文件内所有 json.dumps 调用都用 json_dumps 替代
@@ -18,6 +20,7 @@ from agents.memory_agent import get_memory_agent
 from agents.base_agent import AgentInput, AgentOutput
 from services.vector_service import get_vector_service
 from tools.knowledge_retrieval_tool import get_knowledge_retrieval_tool
+from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,10 @@ app = FastAPI(
     version="2.0.0",
     description="AI推理引擎：FixAgent 统一诊断 + 3层确定性校验"
 )
+
+_settings = get_settings()
+os.makedirs(_settings.local_file_storage_dir, exist_ok=True)
+app.mount(_settings.file_public_base_url, StaticFiles(directory=_settings.local_file_storage_dir), name="rag_files")
 
 app.add_middleware(
     CORSMiddleware,
@@ -246,7 +253,12 @@ async def knowledge_import(request: KnowledgeImportRequest) -> KnowledgeImportRe
             file_url=request.file_url,
             file_type=request.file_type,
             category=request.category,
-            tags=request.tags
+            tags=request.tags,
+            document_id=request.document_id,
+            device_type=request.device_type,
+            manual_type=request.manual_type,
+            document_version=request.document_version,
+            replace_existing=request.replace_existing
         )
         logger.info(f"[knowledge_import] file={result['file_name']} "
                     f"pages={result['total_pages']} "
@@ -263,7 +275,10 @@ async def knowledge_import(request: KnowledgeImportRequest) -> KnowledgeImportRe
             table_count=result["table_count"],
             sections=result["sections"],
             extraction_summary=result["extraction_summary"],
-            process_time_ms=result["process_time_ms"]
+            process_time_ms=result["process_time_ms"],
+            document_id=result.get("document_id"),
+            document_version=result.get("document_version"),
+            source_file_url=result.get("source_file_url")
         )
     except Exception as e:
         logger.exception(f"[knowledge_import] error")
@@ -285,7 +300,12 @@ async def knowledge_search(request: KnowledgeSearchRequest) -> KnowledgeSearchRe
             top_k=request.top_k,
             category=request.category,
             tags=request.tags,
-            image_urls=request.images
+            image_urls=request.images,
+            document_id=request.document_id,
+            chunk_type=request.chunk_type,
+            device_type=request.device_type,
+            document_version=request.document_version,
+            manual_type=request.manual_type
         )
         query_time_ms = int((time.time() - t0) * 1000)
 
@@ -296,6 +316,7 @@ async def knowledge_search(request: KnowledgeSearchRequest) -> KnowledgeSearchRe
             )
 
         data = result.data
+        first_meta = data[0].metadata if data else {}
 
         logger.info(f"[knowledge_search] found={len(data)} latency={query_time_ms}ms")
         return KnowledgeSearchResponse(
@@ -304,7 +325,10 @@ async def knowledge_search(request: KnowledgeSearchRequest) -> KnowledgeSearchRe
             code=200,
             data=data,
             total=len(data),
-            query_time_ms=query_time_ms
+            query_time_ms=query_time_ms,
+            retrieval_confidence=first_meta.get("retrieval_confidence", "low"),
+            matched_types=first_meta.get("matched_types", []),
+            confidence_reason=first_meta.get("confidence_reason", {"candidate_count": 0})
         )
     except HTTPException:
         raise

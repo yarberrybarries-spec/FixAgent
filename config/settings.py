@@ -20,6 +20,12 @@ class Settings:
     # Java 后端服务地址（图谱查询统一走 Java 端，Python 不再直连 Neo4j）
     java_service_url = os.getenv("JAVA_SERVICE_URL", "http://localhost:8080")
 
+    # RabbitMQ 配置
+    rabbitmq_url = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+
+    # 内部服务鉴权令牌（与 Java 端 ai.internal-token 保持一致）
+    internal_token = os.getenv("INTERNAL_TOKEN", "fix-agent-internal-2026")
+
 
 _settings = None
 

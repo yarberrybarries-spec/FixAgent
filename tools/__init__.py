@@ -7,7 +7,6 @@ Agent 可调用的工具集合，每个工具封装一种外部能力。
 已实现：
 - KnowledgeRetrievalTool — 向量知识库检索
 - FactRetrievalTool      — 历史事实批量检索（MemoryAgent 专用）
-- GraphQueryTool         — 图谱诊断路径查询
 - GraphSearchDeviceTool  — 图谱设备搜索
 - DocumentParserTool     — PDF/Word 文档解析
 """
@@ -16,8 +15,6 @@ from .base_tool import BaseTool, ToolResult, ToolError, ToolException
 from .knowledge_retrieval_tool import KnowledgeRetrievalTool, get_knowledge_retrieval_tool
 from .fact_retrieval_tool import FactRetrievalTool, get_fact_retrieval_tool
 from .graph_query_tool import (
-    GraphQueryTool,
-    get_graph_query_tool,
     GraphSearchDeviceTool,
     get_graph_search_device_tool,
 )
@@ -36,8 +33,6 @@ __all__ = [
     "FactRetrievalTool",
     "get_fact_retrieval_tool",
     # 图查询
-    "GraphQueryTool",
-    "get_graph_query_tool",
     "GraphSearchDeviceTool",
     "get_graph_search_device_tool",
     # 文档解析

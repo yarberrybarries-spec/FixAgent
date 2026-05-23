@@ -163,7 +163,7 @@ class _GraphCheck:
             if step.get("action") != "tool_call":
                 continue
             for tc in step.get("tool_calls", []):
-                if tc.get("name") not in ("graph_query_diagnosis_path", "graph_search_devices"):
+                if tc.get("name") not in ("graph_search_java", "graph_search_devices"):
                     continue
                 summary = tc.get("result_summary", "")
                 try:

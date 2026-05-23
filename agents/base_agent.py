@@ -200,14 +200,18 @@ class BaseAgent(ABC):
         # ===== 3. 添加当前轮用户消息 =====
         user_content = input_data.user_message
 
-        # 添加图片信息（如有）
+        # 添加图片信息（如有）—— 使用多模态消息格式
         if input_data.images:
-            images_str = "\n\n## 用户上传的图片\n"
-            for i, img in enumerate(input_data.images):
-                images_str += f"- 图片{i+1}: {img}\n"
-            user_content += images_str
-
-        messages.append({"role": "user", "content": user_content})
+            # 构建多模态 content：[{"type":"text","text":"..."},{"type":"image_url","image_url":{"url":"data:..."}}]
+            content_parts = [{"type": "text", "text": user_content}]
+            for img in input_data.images:
+                content_parts.append({
+                    "type": "image_url",
+                    "image_url": {"url": img}
+                })
+            messages.append({"role": "user", "content": content_parts})
+        else:
+            messages.append({"role": "user", "content": user_content})
 
         return messages
 

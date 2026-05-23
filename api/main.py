@@ -28,10 +28,27 @@ logging.basicConfig(
 )
 
 
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    # 启动：开启 MQ 消费者
+    from mq.consumer import start_consumers
+    from mq.connection import close_connection
+    try:
+        await start_consumers()
+        logger.info("[启动] RabbitMQ 消费者已启动")
+    except Exception as e:
+        logger.warning("[启动] RabbitMQ 消费者启动失败（MQ不可用时降级为HTTP模式）: %s", e)
+    yield
+    # 关闭：断开 MQ 连接
+    await close_connection()
+
 app = FastAPI(
     title="FixAgent AI Module",
     version="2.0.0",
-    description="AI推理引擎：FixAgent 统一诊断 + 3层确定性校验"
+    description="AI推理引擎：FixAgent 统一诊断 + 3层确定性校验",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -368,7 +385,7 @@ async def memory_consolidate(request: MemoryConsolidateRequest) -> MemoryConsoli
 
 
 @app.post("/ai/memory/search_facts")
-async def search_facts(query: str, top_k: int = 5):
+async def search_facts(query: str, top_k: int = 5, session_ids: str = ""):
     """
     事实记忆向量检索接口
 
@@ -381,35 +398,45 @@ async def search_facts(query: str, top_k: int = 5):
     将事实注入上下文 → 发给 AI 生成回复
 
     【过滤逻辑】
-    只返回 metadata.type == "fact" 的向量记录，
-    排除知识库文档等其他类型的向量。
+    1. 只返回 metadata.type == "fact" 的向量记录
+    2. 按 session_ids 过滤，只返回属于当前用户会话的事实
 
     Args:
         query: 用户当前发送的消息文本，用于语义匹配
         top_k: 最多返回几条最相关的事实，默认5条
+        session_ids: 当前用户的会话ID列表，逗号分隔。用于过滤非本用户的事实
 
     Returns:
         {"facts": [{"doc_id": "fact:xxx", "content": "...", "score": 0.85, ...}, ...]}
     """
     import time
 
+    # 解析会话ID白名单
+    allowed_sessions = set()
+    if session_ids:
+        allowed_sessions = {sid.strip() for sid in session_ids.split(",") if sid.strip()}
+
     try:
         t0 = time.time()
         svc = get_vector_service()
-        # 用用户消息做向量检索，在所有向量中搜索最相似的
-        results = await svc.search_by_text(query, top_k=top_k * 2)
-        # 只保留 type=fact 的结果（向量库中还有知识库文档等其他类型）
+        # 多取一些，因为后续要按 session 过滤
+        results = await svc.search_by_text(query, top_k=top_k * 3)
         facts = []
         for r in results:
             metadata = r.get("metadata", {})
-            if metadata.get("type") == "fact":
-                facts.append({
-                    "content": r.get("text", ""),
-                    "score": round(r.get("score", 0), 4),
-                    "doc_id": r.get("doc_id", ""),
-                    "keywords": metadata.get("keywords", ""),
-                    "session_id": metadata.get("session_id", ""),
-                })
+            if metadata.get("type") != "fact":
+                continue
+            # 按会话ID过滤：只保留属于当前用户的事实
+            fact_session = metadata.get("session_id", "")
+            if allowed_sessions and fact_session not in allowed_sessions:
+                continue
+            facts.append({
+                "content": r.get("text", ""),
+                "score": round(r.get("score", 0), 4),
+                "doc_id": r.get("doc_id", ""),
+                "keywords": metadata.get("keywords", ""),
+                "session_id": fact_session,
+            })
         # 按相关度排序，只取 top_k 条
         facts = facts[:top_k]
         query_time_ms = int((time.time() - t0) * 1000)

@@ -176,9 +176,25 @@ async def handle_consolidate(message: aio_pika.abc.AbstractIncomingMessage, chan
 
 
 async def handle_knowledge_import(message: aio_pika.abc.AbstractIncomingMessage, channel: aio_pika.abc.AbstractChannel):
-    """消费知识导入任务：解析文档 → 向量化 → 存入 Redis 向量库"""
+    """消费知识导入任务（含导入和删除两种动作）"""
     async with message.process(requeue=False):
         body = json.loads(message.body)
+        action = body.get("action", "import")
+
+        # ===== 删除动作：只清理向量，不解析文档 =====
+        if action == "delete":
+            document_id = body.get("documentId", "unknown")
+            logger.info("[MQ消费] 向量删除开始, documentId=%s", document_id)
+            try:
+                from services.vector_service import get_vector_service
+                vector_svc = get_vector_service()
+                vector_svc.delete_by_document(document_id)
+                logger.info("[MQ消费] 向量删除完成, documentId=%s", document_id)
+            except Exception as e:
+                logger.error("[MQ消费] 向量删除失败, documentId=%s, 错误:%s", document_id, e, exc_info=True)
+            return
+
+        # ===== 导入动作：解析文档 → 向量化 → 存入 Redis 向量库 =====
         document_id = body.get("documentId") or body.get("taskId", "unknown")
         file_url = body.get("fileUrl", "")
         file_type = body.get("fileType", "pdf")
@@ -187,9 +203,10 @@ async def handle_knowledge_import(message: aio_pika.abc.AbstractIncomingMessage,
         document_version = body.get("documentVersion")
         device_type = body.get("deviceType")
         manual_type = body.get("manualType")
+        old_document_id = body.get("oldDocumentId")
         replace_existing = body.get("replaceExisting", False)
-        logger.info("[MQ消费] 知识导入开始, documentId=%s, fileUrl=%s, version=%s",
-                    document_id, file_url, document_version)
+        logger.info("[MQ消费] 知识导入开始, documentId=%s, oldDocumentId=%s, version=%s",
+                    document_id, old_document_id, document_version)
 
         try:
             from services.knowledge_service import get_knowledge_service
@@ -204,6 +221,7 @@ async def handle_knowledge_import(message: aio_pika.abc.AbstractIncomingMessage,
                 manual_type=manual_type,
                 document_version=document_version,
                 replace_existing=replace_existing,
+                old_document_id=old_document_id,
             )
 
             await publish_result(channel, {

@@ -179,41 +179,57 @@ async def handle_knowledge_import(message: aio_pika.abc.AbstractIncomingMessage,
     """消费知识导入任务：解析文档 → 向量化 → 存入 Redis 向量库"""
     async with message.process(requeue=False):
         body = json.loads(message.body)
-        task_id = body.get("taskId", "unknown")
+        document_id = body.get("documentId") or body.get("taskId", "unknown")
         file_url = body.get("fileUrl", "")
         file_type = body.get("fileType", "pdf")
         category = body.get("category")
         user_id = body.get("userId")
-        logger.info("[MQ消费] 知识导入开始, taskId=%s, fileUrl=%s", task_id, file_url)
+        document_version = body.get("documentVersion")
+        device_type = body.get("deviceType")
+        manual_type = body.get("manualType")
+        replace_existing = body.get("replaceExisting", False)
+        logger.info("[MQ消费] 知识导入开始, documentId=%s, fileUrl=%s, version=%s",
+                    document_id, file_url, document_version)
 
         try:
-            from tools.knowledge_retrieval_tool import get_knowledge_retrieval_tool
-            from services.vector_service import get_vector_service
+            from services.knowledge_service import get_knowledge_service
 
-            # 调用已有的知识导入逻辑
-            tool = get_knowledge_retrieval_tool()
-            result = await tool.import_document(
+            service = get_knowledge_service()
+            result = await service.import_document(
                 file_url=file_url,
                 file_type=file_type,
                 category=category,
+                document_id=document_id,
+                device_type=device_type,
+                manual_type=manual_type,
+                document_version=document_version,
+                replace_existing=replace_existing,
             )
 
             await publish_result(channel, {
-                "taskId": task_id,
+                "taskId": document_id,
+                "documentId": document_id,
                 "userId": user_id,
                 "success": True,
                 "data": {
-                    "total_chunks": result.get("total_chunks", 0),
+                    "total_chunks": result.get("text_count", 0) + result.get("table_count", 0),
+                    "text_count": result.get("text_count", 0),
+                    "image_count": result.get("image_count", 0),
+                    "table_count": result.get("table_count", 0),
+                    "document_id": document_id,
                     "file_url": file_url,
                 },
             }, exchange_name=KNOWLEDGE_EXCHANGE, routing_key=KNOWLEDGE_RESULT_KEY)
 
-            logger.info("[MQ消费] 知识导入完成, taskId=%s, chunks=%s", task_id, result.get("total_chunks", 0))
+            logger.info("[MQ消费] 知识导入完成, documentId=%s, text=%s, image=%s, table=%s",
+                        document_id, result.get("text_count", 0),
+                        result.get("image_count", 0), result.get("table_count", 0))
 
         except Exception as e:
-            logger.error("[MQ消费] 知识导入失败, taskId=%s, 错误:%s", task_id, e, exc_info=True)
+            logger.error("[MQ消费] 知识导入失败, documentId=%s, 错误:%s", document_id, e, exc_info=True)
             await publish_result(channel, {
-                "taskId": task_id,
+                "taskId": document_id,
+                "documentId": document_id,
                 "userId": user_id,
                 "success": False,
                 "error": str(e),

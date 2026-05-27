@@ -124,30 +124,43 @@ class GraphJavaTool(BaseTool):
             if has_images:
                 body["imageUrls"] = image_urls
 
-            logger.info(f"[graph_java_tool] 调用 Java 图谱查询: keyword={keyword}, "
-                        f"fault={has_fault}, comp={has_comp}, images={len(image_urls or [])}")
+            logger.info("[graph_java_tool] 调用 Java 图谱查询: keyword=%s, "
+                        "fault_desc=%s, comp_desc=%s, images=%d",
+                        keyword, fault_description, component_description, len(image_urls or []))
 
-            # HTTP 调用 Java 端
+            headers = {"X-Internal-Token": self._settings.internal_token}
+
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(
                     f"{self._base_url}/weixiu/path/search",
-                    json=body
+                    json=body,
+                    headers=headers
                 )
                 resp.raise_for_status()
                 result = resp.json()
 
-            # Java 端返回格式: {"code": 1, "data": {"records": [...], "total": N}}
             data = result.get("data", {})
             records = data.get("records", [])
             total = data.get("total", 0)
 
             if not records:
+                logger.info("[graph_java_tool] 未找到匹配的诊断路径")
                 return {
                     "paths_found": 0,
                     "context": "【图谱查询结果】\n未找到匹配的诊断路径。\n"
                 }
 
-            # 格式化为 LLM 可读的文本（复刻 buildGraphContextAssembler 格式）
+            for i, r in enumerate(records):
+                logger.info("[graph_java_tool] 路径%d: %s → %s → %s (matchScore=%s, 方案数=%d)",
+                            i + 1,
+                            r.get("deviceName", "?"),
+                            r.get("componentName", "?"),
+                            r.get("faultName", "?"),
+                            r.get("matchScore", "?"),
+                            len(r.get("solutions") or []))
+
+            logger.info("[graph_java_tool] 查询完成: 命中 %d 条路径, 总计 %d", len(records), total)
+
             context = self._format_paths(records, keyword)
 
             return {

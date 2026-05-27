@@ -34,6 +34,12 @@ KNOWLEDGE_IMPORT_QUEUE = "knowledge.import.queue"
 KNOWLEDGE_RESULT_KEY = "knowledge.result"
 KNOWLEDGE_RESULT_QUEUE = "knowledge.result.queue"
 
+# ===== 检修任务队列 =====
+TASK_EXCHANGE = "task.exchange"
+TASK_GENERATE_QUEUE = "task.generate.queue"
+TASK_GENERATE_RESULT_KEY = "task.generate.result"
+TASK_GENERATE_RESULT_QUEUE = "task.generate.result.queue"
+
 
 async def publish_result(channel: aio_pika.abc.AbstractChannel, data: dict,
                          exchange_name: str = EXCHANGE_NAME, routing_key: str = RESULT_KEY):
@@ -255,6 +261,52 @@ async def handle_knowledge_import(message: aio_pika.abc.AbstractIncomingMessage,
             }, exchange_name=KNOWLEDGE_EXCHANGE, routing_key=KNOWLEDGE_RESULT_KEY)
 
 
+async def handle_task_generate(message: aio_pika.abc.AbstractIncomingMessage, channel: aio_pika.abc.AbstractChannel):
+    """消费检修任务生成请求，调用 MaintenanceAgent 生成步骤"""
+    async with message.process(requeue=False):
+        body = json.loads(message.body)
+        task_id = body.get("taskId")
+        task_number = body.get("taskNumber", "unknown")
+        logger.info("[MQ消费] 检修步骤生成开始, taskId=%s, taskNumber=%s", task_id, task_number)
+
+        try:
+            from agents.maintenance_agent import get_maintenance_agent
+
+            agent = get_maintenance_agent()
+            result = await agent.generate_steps(
+                fault_description=body.get("faultDescription", ""),
+                device_id=body.get("deviceId"),
+                device_name=body.get("deviceName"),
+                urgency_level=body.get("urgencyLevel", 1),
+                report_images=body.get("reportImages"),
+            )
+
+            if result.get("success"):
+                await publish_result(channel, {
+                    "taskId": task_id,
+                    "success": True,
+                    "steps": result["steps"],
+                }, exchange_name=TASK_EXCHANGE, routing_key=TASK_GENERATE_RESULT_KEY)
+                logger.info("[MQ消费] 检修步骤生成成功, taskId=%s, 步骤数=%d",
+                            task_id, len(result["steps"]))
+            else:
+                await publish_result(channel, {
+                    "taskId": task_id,
+                    "success": False,
+                    "error": result.get("error", "生成失败"),
+                }, exchange_name=TASK_EXCHANGE, routing_key=TASK_GENERATE_RESULT_KEY)
+                logger.error("[MQ消费] 检修步骤生成失败, taskId=%s, error=%s",
+                             task_id, result.get("error"))
+
+        except Exception as e:
+            logger.error("[MQ消费] 检修步骤生成异常, taskId=%s, 错误:%s", task_id, e, exc_info=True)
+            await publish_result(channel, {
+                "taskId": task_id,
+                "success": False,
+                "error": str(e),
+            }, exchange_name=TASK_EXCHANGE, routing_key=TASK_GENERATE_RESULT_KEY)
+
+
 async def _declare_topology(channel: aio_pika.abc.AbstractChannel):
     """
     声明 Exchange / Queue / Binding，与 Java 端 RabbitMQConfig 保持一致。
@@ -309,7 +361,25 @@ async def _declare_topology(channel: aio_pika.abc.AbstractChannel):
     )
     await knowledge_result_q.bind(knowledge_exchange, "knowledge.result")
 
-    return realtime_q, consolidate_q, knowledge_import_q
+    # ===== 检修任务拓扑 =====
+    task_exchange = await channel.declare_exchange(
+        TASK_EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True
+    )
+
+    # 检修步骤生成队列（TTL 5min）
+    task_generate_q = await channel.declare_queue(
+        TASK_GENERATE_QUEUE, durable=True,
+        arguments={"x-message-ttl": 300_000, "x-dead-letter-exchange": "memory.dlx"},
+    )
+    await task_generate_q.bind(task_exchange, "task.generate")
+
+    # 检修步骤生成结果队列
+    task_generate_result_q = await channel.declare_queue(
+        TASK_GENERATE_RESULT_QUEUE, durable=True,
+    )
+    await task_generate_result_q.bind(task_exchange, "task.generate.result")
+
+    return realtime_q, consolidate_q, knowledge_import_q, task_generate_q
 
 
 async def start_consumers():
@@ -317,7 +387,7 @@ async def start_consumers():
 
     # 先用一个临时通道声明拓扑
     init_channel = await connection.channel()
-    realtime_q, consolidate_q, knowledge_import_q = await _declare_topology(init_channel)
+    realtime_q, consolidate_q, knowledge_import_q, task_generate_q = await _declare_topology(init_channel)
     await init_channel.close()
 
     # 实时更新通道（prefetch=5，允许并发处理多条）
@@ -344,5 +414,13 @@ async def start_consumers():
         lambda msg: handle_knowledge_import(msg, knowledge_channel)
     )
 
-    logger.info("[MQ消费] 消费者启动完成，监听 %s, %s, %s",
-                REALTIME_QUEUE, CONSOLIDATE_QUEUE, KNOWLEDGE_IMPORT_QUEUE)
+    # 检修任务生成通道（prefetch=1，LLM推理耗时长，串行处理）
+    task_channel = await connection.channel()
+    await task_channel.set_qos(prefetch_count=1)
+    task_queue = await task_channel.get_queue(TASK_GENERATE_QUEUE)
+    await task_queue.consume(
+        lambda msg: handle_task_generate(msg, task_channel)
+    )
+
+    logger.info("[MQ消费] 消费者启动完成，监听 %s, %s, %s, %s",
+                REALTIME_QUEUE, CONSOLIDATE_QUEUE, KNOWLEDGE_IMPORT_QUEUE, TASK_GENERATE_QUEUE)

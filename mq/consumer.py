@@ -34,6 +34,17 @@ KNOWLEDGE_IMPORT_QUEUE = "knowledge.import.queue"
 KNOWLEDGE_RESULT_KEY = "knowledge.result"
 KNOWLEDGE_RESULT_QUEUE = "knowledge.result.queue"
 
+# ===== 检修任务队列 =====
+TASK_EXCHANGE = "task.exchange"
+TASK_GENERATE_QUEUE = "task.generate.queue"
+TASK_GENERATE_RESULT_KEY = "task.generate.result"
+TASK_GENERATE_RESULT_QUEUE = "task.generate.result.queue"
+
+# ===== 步骤AI验证队列 =====
+TASK_STEP_VERIFY_QUEUE = "task.step.verify.queue"
+TASK_STEP_VERIFY_RESULT_KEY = "task.step.verify.result"
+TASK_STEP_VERIFY_RESULT_QUEUE = "task.step.verify.result.queue"
+
 
 async def publish_result(channel: aio_pika.abc.AbstractChannel, data: dict,
                          exchange_name: str = EXCHANGE_NAME, routing_key: str = RESULT_KEY):
@@ -255,6 +266,96 @@ async def handle_knowledge_import(message: aio_pika.abc.AbstractIncomingMessage,
             }, exchange_name=KNOWLEDGE_EXCHANGE, routing_key=KNOWLEDGE_RESULT_KEY)
 
 
+async def handle_task_generate(message: aio_pika.abc.AbstractIncomingMessage, channel: aio_pika.abc.AbstractChannel):
+    """消费检修任务生成请求，调用 MaintenanceAgent 生成步骤"""
+    async with message.process(requeue=False):
+        body = json.loads(message.body)
+        task_id = body.get("taskId")
+        task_number = body.get("taskNumber", "unknown")
+        logger.info("[MQ消费] 检修步骤生成开始, taskId=%s, taskNumber=%s", task_id, task_number)
+
+        try:
+            from agents.maintenance_agent import get_maintenance_agent
+
+            agent = get_maintenance_agent()
+            result = await agent.generate_steps(
+                fault_description=body.get("faultDescription", ""),
+                device_id=body.get("deviceId"),
+                device_name=body.get("deviceName"),
+                urgency_level=body.get("urgencyLevel", 1),
+                report_images=body.get("reportImages"),
+            )
+
+            if result.get("success"):
+                await publish_result(channel, {
+                    "taskId": task_id,
+                    "success": True,
+                    "steps": result["steps"],
+                }, exchange_name=TASK_EXCHANGE, routing_key=TASK_GENERATE_RESULT_KEY)
+                logger.info("[MQ消费] 检修步骤生成成功, taskId=%s, 步骤数=%d",
+                            task_id, len(result["steps"]))
+            else:
+                await publish_result(channel, {
+                    "taskId": task_id,
+                    "success": False,
+                    "error": result.get("error", "生成失败"),
+                }, exchange_name=TASK_EXCHANGE, routing_key=TASK_GENERATE_RESULT_KEY)
+                logger.error("[MQ消费] 检修步骤生成失败, taskId=%s, error=%s",
+                             task_id, result.get("error"))
+
+        except Exception as e:
+            logger.error("[MQ消费] 检修步骤生成异常, taskId=%s, 错误:%s", task_id, e, exc_info=True)
+            await publish_result(channel, {
+                "taskId": task_id,
+                "success": False,
+                "error": str(e),
+            }, exchange_name=TASK_EXCHANGE, routing_key=TASK_GENERATE_RESULT_KEY)
+
+
+async def handle_step_verify(message: aio_pika.abc.AbstractIncomingMessage, channel: aio_pika.abc.AbstractChannel):
+    """消费步骤AI验证请求，调用 StepVerifyAgent 多模态验证"""
+    async with message.process(requeue=False):
+        body = json.loads(message.body)
+        task_id = body.get("taskId")
+        step_id = body.get("stepId")
+        logger.info("[MQ消费] 步骤AI验证开始, taskId=%s, stepId=%s", task_id, step_id)
+
+        try:
+            from agents.step_verify_agent import get_step_verify_agent
+
+            agent = get_step_verify_agent()
+            result = await agent.verify(
+                step_title=body.get("stepTitle", ""),
+                step_content=body.get("stepContent", ""),
+                images=body.get("images"),
+                note=body.get("note"),
+                safety_note=body.get("safetyNote"),
+                device_name=body.get("deviceName"),
+                fault_description=body.get("faultDescription"),
+            )
+
+            await publish_result(channel, {
+                "taskId": task_id,
+                "stepId": step_id,
+                "aiPass": result["pass"],
+                "confidence": result["confidence"],
+                "reason": result["reason"],
+            }, exchange_name=TASK_EXCHANGE, routing_key=TASK_STEP_VERIFY_RESULT_KEY)
+
+            logger.info("[MQ消费] 步骤AI验证完成, stepId=%s, pass=%s, confidence=%.2f",
+                        step_id, result["pass"], result["confidence"])
+
+        except Exception as e:
+            logger.error("[MQ消费] 步骤AI验证异常, stepId=%s, 错误:%s", step_id, e, exc_info=True)
+            await publish_result(channel, {
+                "taskId": task_id,
+                "stepId": step_id,
+                "aiPass": False,
+                "confidence": 0.0,
+                "reason": f"AI验证服务异常: {e}",
+            }, exchange_name=TASK_EXCHANGE, routing_key=TASK_STEP_VERIFY_RESULT_KEY)
+
+
 async def _declare_topology(channel: aio_pika.abc.AbstractChannel):
     """
     声明 Exchange / Queue / Binding，与 Java 端 RabbitMQConfig 保持一致。
@@ -309,7 +410,40 @@ async def _declare_topology(channel: aio_pika.abc.AbstractChannel):
     )
     await knowledge_result_q.bind(knowledge_exchange, "knowledge.result")
 
-    return realtime_q, consolidate_q, knowledge_import_q
+    # ===== 检修任务拓扑 =====
+    task_exchange = await channel.declare_exchange(
+        TASK_EXCHANGE, aio_pika.ExchangeType.TOPIC, durable=True
+    )
+
+    # 检修步骤生成队列（TTL 5min）
+    task_generate_q = await channel.declare_queue(
+        TASK_GENERATE_QUEUE, durable=True,
+        arguments={"x-message-ttl": 300_000, "x-dead-letter-exchange": "memory.dlx"},
+    )
+    await task_generate_q.bind(task_exchange, "task.generate")
+
+    # 检修步骤生成结果队列
+    task_generate_result_q = await channel.declare_queue(
+        TASK_GENERATE_RESULT_QUEUE, durable=True,
+    )
+    await task_generate_result_q.bind(task_exchange, "task.generate.result")
+
+    # ===== 步骤AI验证拓扑 =====
+
+    # 步骤验证队列（TTL 5min）
+    step_verify_q = await channel.declare_queue(
+        TASK_STEP_VERIFY_QUEUE, durable=True,
+        arguments={"x-message-ttl": 300_000, "x-dead-letter-exchange": "memory.dlx"},
+    )
+    await step_verify_q.bind(task_exchange, "task.step.verify")
+
+    # 步骤验证结果队列
+    step_verify_result_q = await channel.declare_queue(
+        TASK_STEP_VERIFY_RESULT_QUEUE, durable=True,
+    )
+    await step_verify_result_q.bind(task_exchange, "task.step.verify.result")
+
+    return realtime_q, consolidate_q, knowledge_import_q, task_generate_q, step_verify_q
 
 
 async def start_consumers():
@@ -317,7 +451,7 @@ async def start_consumers():
 
     # 先用一个临时通道声明拓扑
     init_channel = await connection.channel()
-    realtime_q, consolidate_q, knowledge_import_q = await _declare_topology(init_channel)
+    realtime_q, consolidate_q, knowledge_import_q, task_generate_q, step_verify_q = await _declare_topology(init_channel)
     await init_channel.close()
 
     # 实时更新通道（prefetch=5，允许并发处理多条）
@@ -344,5 +478,22 @@ async def start_consumers():
         lambda msg: handle_knowledge_import(msg, knowledge_channel)
     )
 
-    logger.info("[MQ消费] 消费者启动完成，监听 %s, %s, %s",
-                REALTIME_QUEUE, CONSOLIDATE_QUEUE, KNOWLEDGE_IMPORT_QUEUE)
+    # 检修任务生成通道（prefetch=1，LLM推理耗时长，串行处理）
+    task_channel = await connection.channel()
+    await task_channel.set_qos(prefetch_count=1)
+    task_queue = await task_channel.get_queue(TASK_GENERATE_QUEUE)
+    await task_queue.consume(
+        lambda msg: handle_task_generate(msg, task_channel)
+    )
+
+    # 步骤AI验证通道（prefetch=1，多模态LLM验证耗时，串行处理）
+    step_verify_channel = await connection.channel()
+    await step_verify_channel.set_qos(prefetch_count=1)
+    step_verify_queue = await step_verify_channel.get_queue(TASK_STEP_VERIFY_QUEUE)
+    await step_verify_queue.consume(
+        lambda msg: handle_step_verify(msg, step_verify_channel)
+    )
+
+    logger.info("[MQ消费] 消费者启动完成，监听 %s, %s, %s, %s, %s",
+                REALTIME_QUEUE, CONSOLIDATE_QUEUE, KNOWLEDGE_IMPORT_QUEUE,
+                TASK_GENERATE_QUEUE, TASK_STEP_VERIFY_QUEUE)

@@ -72,16 +72,20 @@ class GraphSearchDeviceTool(BaseTool):
         keyword: str,
         limit: int = 10
     ) -> dict:
+        logger.info("[graph_query_tool] 搜索设备: keyword=%s, limit=%d", keyword, limit)
+
         try:
+            headers = {"X-Internal-Token": self._settings.internal_token}
+
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(
                     f"{self._base_url}/weixiu/device/search",
-                    params={"keyword": keyword, "limit": limit}
+                    params={"keyword": keyword, "limit": limit},
+                    headers=headers
                 )
                 resp.raise_for_status()
                 result = resp.json()
 
-            # Java 端返回格式: {"code": 1, "data": [...]}
             devices = result.get("data", [])
 
             formatted = []
@@ -94,6 +98,10 @@ class GraphSearchDeviceTool(BaseTool):
                     "location": d.get("location"),
                     "manufacturer": d.get("manufacturer")
                 })
+
+            device_names = [d["name"] for d in formatted if d.get("name")]
+            logger.info("[graph_query_tool] 搜索完成: 找到 %d 台设备 %s",
+                        len(formatted), device_names)
 
             return {
                 "count": len(formatted),

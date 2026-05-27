@@ -30,6 +30,30 @@ def auto_test():
             result = await KnowledgeRetrievalTool().run(query="轴承", top_k=1)
             return result.model_dump()
 
+    async def guessed_filter_falls_back_to_broad_recall():
+        with patch("tools.knowledge_retrieval_tool.get_text_embedding") as get_emb, patch("tools.knowledge_retrieval_tool.get_vector_service") as get_vec:
+            emb = MagicMock()
+            emb.embed = AsyncMock(return_value=vec(1))
+            get_emb.return_value = emb
+            service = MagicMock()
+            service.search.side_effect = lambda *args, **kwargs: (
+                []
+                if kwargs.get("filter")
+                else [{"doc_id": "spark-step", "score": 0.1, "text": "spark plug torque", "metadata": {}}]
+            )
+            service.keyword_search.return_value = []
+            get_vec.return_value = service
+            result = await KnowledgeRetrievalTool().run(
+                query="spark plug torque",
+                category="manual",
+                manual_type="guessed-manual-type",
+                top_k=1,
+            )
+            return {
+                "result": result.model_dump(),
+                "filters": [call.kwargs["filter"] for call in service.search.call_args_list],
+            }
+
     async def multimodal_search():
         with patch("tools.knowledge_retrieval_tool.get_multimodal_embedding") as get_mm, patch("tools.knowledge_retrieval_tool.get_vector_service") as get_vec:
             mm = MagicMock()
@@ -50,6 +74,16 @@ def auto_test():
             return (await KnowledgeRetrievalTool().run(query="轴承")).model_dump()
 
     run_auto_cases([
+        {
+            "name": "guessed optional filters fall back to broad recall when empty",
+            "input": "category/manual_type filters miss existing evidence",
+            "expected": "second search omits guessed filters and returns evidence",
+            "run": lambda: run_async(guessed_filter_falls_back_to_broad_recall()),
+            "check": lambda x: x["result"]["success"] is True
+            and x["result"]["data"][0]["id"] == "spark-step"
+            and x["filters"][0] is not None
+            and None in x["filters"],
+        },
         {
             "name": "_build_filter 支持 category/tags/组合过滤",
             "input": "category=motor,tags=bearing|overheat",

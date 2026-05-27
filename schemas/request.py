@@ -267,6 +267,19 @@ class KnowledgeImportRequest(BaseModel):
     replace_existing: bool = Field(default=False, description="同文档 ID 时先删除旧向量")
 
 
+# ==================== 临时计划草稿相关 ====================
+
+class TemporaryPlanGenerateRequest(BaseModel):
+    """未匹配标准流程时，由 Java 请求生成的待审核临时计划草稿。"""
+
+    request_id: str = Field(..., min_length=1, description="Java 侧生成的幂等请求 ID")
+    device_type: str = Field(..., min_length=1, description="设备类型")
+    maintenance_level: Optional[str] = Field(default=None, description="检修等级")
+    fault_description: str = Field(..., min_length=1, description="故障描述")
+    images: Optional[List[str]] = Field(default=None, description="故障图片 URL 或 data URI")
+    top_k: int = Field(default=5, ge=1, le=10, description="用于生成草稿的证据数")
+
+
 # ==================== 案例相关 ====================
 
 class CaseCreateRequest(BaseModel):

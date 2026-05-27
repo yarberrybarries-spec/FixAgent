@@ -8,6 +8,18 @@ from config.settings import get_settings
 logger = logging.getLogger(__name__)
 
 
+def _json_default(value: Any) -> Any:
+    """Convert structured tool results into JSON payloads sent back to the LLM."""
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def _json_compatible(value: Any) -> Any:
+    """Return the same JSON-ready tool payload used for the model and audit trace."""
+    return json.loads(json.dumps(value, ensure_ascii=False, default=_json_default))
+
+
 class LLMService:
     """
     大模型服务类
@@ -253,11 +265,13 @@ class LLMService:
                     except Exception as e:
                         result = {"error": str(e)}
 
-                    call_record["result_summary"] = str(result)[:200]
+                    result_payload = _json_compatible(result)
+                    call_record["result_summary"] = str(result_payload)[:200]
+                    call_record["result_data"] = result_payload
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
-                        "content": json.dumps(result, ensure_ascii=False)
+                        "content": json.dumps(result_payload, ensure_ascii=False)
                     })
                 else:
                     call_record["result_summary"] = f"tool not found: {func_name}"

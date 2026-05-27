@@ -13,6 +13,7 @@ def auto_test():
         KnowledgeSearchRequest,
         MemoryConsolidateRequest,
         MemoryMessage,
+        TemporaryPlanGenerateRequest,
     )
     from tools.base_tool import ToolResult
 
@@ -60,7 +61,19 @@ def auto_test():
             main, "get_review_agent", return_value=review_agent
         ):
             response = await main.chat(ChatRequest(session_id="s1", message="hello", stream=False))
-            return {"response": response.model_dump(), "review_calls": review_agent.review.call_count}
+            if hasattr(response, "model_dump"):
+                content = response.model_dump()
+            elif hasattr(response, "content"):
+                content = response.content
+            else:
+                content = response.body
+            if isinstance(content, bytes):
+                content = json.loads(content.decode("utf-8"))
+            return {
+                "status_code": getattr(response, "status_code", 200),
+                "response": content,
+                "review_calls": review_agent.review.call_count,
+            }
 
     async def chat_stream_success():
         async def events(_input):
@@ -143,6 +156,29 @@ def auto_test():
             response = await main.knowledge_storage_stats()
             return response.model_dump()
 
+    async def temporary_plan_generate_success():
+        svc = MagicMock()
+        from schemas.response import TemporaryPlanDraftResponse
+
+        svc.generate = AsyncMock(
+            return_value=TemporaryPlanDraftResponse(
+                request_id="req-1",
+                status="PENDING_REVIEW",
+                device_type="发动机总成",
+                title="待审核临时计划",
+                warnings=["审核通过后方可执行"],
+            )
+        )
+        with patch.object(main, "get_temporary_plan_service", return_value=svc):
+            response = await main.temporary_plan_generate(
+                TemporaryPlanGenerateRequest(
+                    request_id="req-1",
+                    device_type="发动机总成",
+                    fault_description="异响",
+                )
+            )
+            return response.model_dump()
+
     async def knowledge_clear_cache_success():
         svc = MagicMock()
         svc.clear_embedding_cache.return_value = {"text_deleted": 2, "image_deleted": 1, "total_deleted": 3}
@@ -167,7 +203,10 @@ def auto_test():
         )
         with patch.object(main, "get_memory_agent", return_value=agent):
             response = await main.memory_consolidate(request)
-            return {"status_code": response.status_code, "content": response.content}
+            content = getattr(response, "content", None)
+            if content is None and hasattr(response, "body"):
+                content = json.loads(response.body.decode("utf-8"))
+            return {"status_code": response.status_code, "content": content}
 
     async def search_facts_filters_type():
         svc = MagicMock()
@@ -229,11 +268,14 @@ def auto_test():
                 and x["verification"] is None,
             },
             {
-                "name": "chat() skips ReviewAgent when FixAgent returns error",
+                "name": "chat() returns failure response and skips ReviewAgent when FixAgent errors",
                 "input": "fix metadata.status=error",
-                "expected": "review call count is 0",
+                "expected": "HTTP 500, success=False, review call count is 0",
                 "run": lambda: run_async(chat_fix_error_skips_review()),
-                "check": lambda x: x["response"]["message"] == "temporary unavailable"
+                "check": lambda x: x["status_code"] == 500
+                and x["response"]["success"] is False
+                and x["response"]["code"] == 500
+                and x["response"]["message"] == "temporary unavailable"
                 and x["review_calls"] == 0,
             },
             {
@@ -276,6 +318,14 @@ def auto_test():
                 "expected": "three cache keys deleted",
                 "run": lambda: run_async(knowledge_clear_cache_success()),
                 "check": lambda x: x["total_deleted"] == 3,
+            },
+            {
+                "name": "temporary_plan_generate() returns review-required draft",
+                "input": "TemporaryPlanGenerateRequest",
+                "expected": "status=PENDING_REVIEW and review_required=True",
+                "run": lambda: run_async(temporary_plan_generate_success()),
+                "check": lambda x: x["status"] == "PENDING_REVIEW"
+                and x["review_required"] is True,
             },
             {
                 "name": "memory_consolidate() returns JSONResponse when agent status=error",

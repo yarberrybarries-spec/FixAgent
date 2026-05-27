@@ -38,6 +38,20 @@ def auto_test():
             "api_calls": svc._call_api_sync.call_count,
         }
 
+    async def transient_api_failure_retries():
+        svc = build_service()
+        svc._call_api_sync = MagicMock(side_effect=[
+            RuntimeError("Embedding API returned code=500"),
+            [fake_vector(0.6)],
+        ])
+        with patch("embeddings.text_embedding.asyncio.sleep", new_callable=__import__("unittest").mock.AsyncMock) as sleep:
+            result = await svc.embed_batch(["retry-me"])
+        return {
+            "first": result[0][0],
+            "api_calls": svc._call_api_sync.call_count,
+            "sleep_calls": sleep.await_count,
+        }
+
     async def cache_hit():
         svc = build_service()
         svc.redis.get.return_value = __import__("pickle").dumps(fake_vector(0.8))
@@ -55,6 +69,13 @@ def auto_test():
             return get_text_embedding() is get_text_embedding()
 
     run_auto_cases([
+        {
+            "name": "Embedding API temporary failure is retried",
+            "input": "first request fails and second request succeeds",
+            "expected": {"api_calls": 2, "sleep_calls": 1},
+            "run": lambda: run_async(transient_api_failure_retries()),
+            "check": lambda x: x["first"] == 0.6 and x["api_calls"] == 2 and x["sleep_calls"] == 1,
+        },
         {
             "name": "单条文本向量化返回 1024 维 float 列表",
             "input": "电动机轴承过热",

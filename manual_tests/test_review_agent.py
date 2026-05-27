@@ -16,7 +16,68 @@ def auto_test():
             emb = MagicMock()
             emb.embed_batch = AsyncMock(side_effect=RuntimeError("向量失败"))
             get_emb.return_value = emb
-            return await _GroundingCheck.run("建议检查轴承温度是否超过100°C。", trace)
+            return await _GroundingCheck.run("建议检查轴承是否存在异常磨损。", trace)
+
+    async def grounding_critical_claims_require_literal_evidence():
+        trace = [{
+            "action": "tool_call",
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "arguments": {"query": "火花塞检查与安装"},
+                "result_summary": "火花塞间隙标准值为0.7～0.9 mm，安装扭矩为20 ± 2 N·m，使用16 mm工具。",
+                "result_data": [{"content": "火花塞间隙标准值为0.7～0.9 mm，安装扭矩为20 ± 2 N·m，使用16 mm工具。"}],
+            }],
+        }]
+        with patch("embeddings.text_embedding.get_text_embedding") as get_emb:
+            emb = MagicMock()
+            emb.embed_batch = AsyncMock(return_value=[[1.0, 0.0]] * 8)
+            get_emb.return_value = emb
+            return await _GroundingCheck.run(
+                "- 火花塞间隙：0.7～0.9 mm。\n"
+                "- 安装扭矩：20 ± 2 N·m。\n"
+                "- 每10,000 km或6个月检查一次。\n"
+                "- 推荐型号：NGK CR7E。\n"
+                "- 安装前确认型号匹配（如NGK CR7E vs. DENSO U24ESR-U）。\n"
+                "- 发动机温度保持80～90℃后再操作。",
+                trace,
+            )
+
+    async def review_moves_unsupported_critical_lines_out_of_guidance():
+        output = AgentOutput(
+            agent_name="fix_agent",
+            message=(
+                "## 操作步骤\n"
+                "- 火花塞间隙：0.7～0.9 mm。\n"
+                "- 安装扭矩：20 ± 2 N·m（18～22 N·m）。\n"
+                "- 每10,000 km或6个月检查一次。请记录检查日期。\n"
+                "- 发动机停止后进行拆卸。"
+            ),
+            tools_used=["knowledge_retrieval"],
+            metadata={"react_trace": []},
+            latency_ms=10,
+        )
+        grounding = {
+            "unverified_claims": [{
+                "sentence": "- 每10,000 km或6个月检查一次。",
+                "critical_claims": ["10,000 km", "6个月"],
+                "reason": "关键内容未找到明确依据",
+            }, {
+                "sentence": "- 安装扭矩：20 ± 2 N·m（18～22 N·m）。",
+                "critical_claims": ["20 ± 2 N·m", "18～22 N·m"],
+                "matched_claims": ["20 ± 2 N·m"],
+                "unmatched_claims": ["18～22 N·m"],
+                "reason": "关键内容未找到明确依据",
+            }],
+            "verified_claims": [{"sentence": "- 火花塞间隙：0.7～0.9 mm。"}],
+            "total_claims": 2,
+            "verified_count": 1,
+            "unverified_count": 1,
+        }
+        with patch("agents.review_agent._GroundingCheck.run", new=AsyncMock(return_value=grounding)), patch(
+            "agents.review_agent._GraphCheck.run",
+            new=AsyncMock(return_value={"unverified_paths": [], "verified_paths": [], "total_paths": 0, "verified_count": 0, "unverified_count": 0}),
+        ):
+            return (await ReviewAgent().review(output)).model_dump()
 
     async def review_pipeline():
         output = AgentOutput(
@@ -56,11 +117,21 @@ def auto_test():
             "check": lambda x: x["unverified_count"] > 0 and "无工具调用记录" in x["note"],
         },
         {
-            "name": "向量化失败时 grounding 默认通过",
+            "name": "向量化失败时关键维修声明不得默认通过",
             "input": "embed_batch 抛异常",
-            "expected": "unverified_count=0",
+            "expected": "unverified_count>0",
             "run": lambda: run_async(grounding_embedding_fail()),
-            "check": lambda x: x["unverified_count"] == 0 and "向量化失败" in x["note"],
+            "check": lambda x: x["unverified_count"] > 0 and "无法确认" in x["note"],
+        },
+        {
+            "name": "关键参数、周期和型号必须分别有原文依据",
+            "input": "手册有间隙和扭矩，没有周期和型号",
+            "expected": "周期、型号示例和温度均未验证",
+            "run": lambda: run_async(grounding_critical_claims_require_literal_evidence()),
+            "check": lambda x: x["verified_count"] == 2
+            and x["unverified_count"] == 4
+            and any("10,000" in c["sentence"] for c in x["unverified_claims"])
+            and sum("CR7E" in c["sentence"] for c in x["unverified_claims"]) == 2,
         },
         {
             "name": "_GraphCheck 提取故障-方案对和 trace 结果",
@@ -68,7 +139,7 @@ def auto_test():
             "expected": "提取到 pair",
             "run": lambda: {
                 "pairs": _GraphCheck._extract_pairs("1. 轴承过热：立即更换轴承并检查润滑"),
-                "trace": _GraphCheck._parse_trace_results([{"action": "tool_call", "tool_calls": [{"name": "graph_query_diagnosis_path", "result_summary": '[{\"fault_name\":\"轴承过热\",\"solution_title\":\"立即更换轴承并检查润滑\"}'}]}]),
+                "trace": _GraphCheck._parse_trace_results([{"action": "tool_call", "tool_calls": [{"name": "graph_search_java", "result_summary": '[{\"fault_name\":\"轴承过热\",\"solution_title\":\"立即更换轴承并检查润滑\"}]'}]}]),
             },
             "check": lambda x: x["pairs"][0]["fault_name"] == "轴承过热" and x["trace"][0]["solution_title"] == "立即更换轴承并检查润滑",
         },
@@ -88,6 +159,19 @@ def auto_test():
             "expected": "metadata.verification 存在",
             "run": lambda: run_async(review_pipeline()),
             "check": lambda x: "verification" in x["metadata"] and x["metadata"]["verification_has_issues"] is True,
+        },
+        {
+            "name": "review() 将无依据关键内容移出正式指引并标明安全提示来源",
+            "input": "周期无依据且回答触发发动机安全规则",
+            "expected": "正式段无周期，待确认段含周期，安全提醒有来源声明",
+            "run": lambda: run_async(review_moves_unsupported_critical_lines_out_of_guidance()),
+            "check": lambda x: "10,000" not in x["message"].split("## 待确认信息")[0]
+            and "20 ± 2 N·m" in x["message"].split("## 待确认信息")[0]
+            and "## 待确认信息" in x["message"]
+            and "10,000" in x["message"].split("## 待确认信息")[1]
+            and "18～22 N·m" in x["message"].split("## 待确认信息")[1]
+            and "## 系统通用安全提醒" in x["message"]
+            and "不代表当前手册原文" in x["message"],
         },
         {
             "name": "get_inline_markers() 返回按位置排序且去重的标记",

@@ -307,6 +307,44 @@ class KnowledgeCacheClearResponse(BaseResponse):
     total_deleted: int
 
 
+# ==================== 临时计划草稿相关 ====================
+
+class TemporaryPlanEvidence(BaseModel):
+    source_id: str
+    content: str
+    score: float = 0.0
+    page_number: Optional[int] = None
+    confidence: Optional[str] = None
+
+
+class TemporaryPlanStep(BaseModel):
+    step_number: int
+    step_name: str
+    description: str
+    tools_required: List[str] = Field(default_factory=list)
+    risk_warning: Optional[str] = None
+    is_mandatory: int = 1
+    requires_confirmation: int = 0
+    check_standard: Optional[str] = None
+    require_measured_value: int = 0
+    expected_duration: Optional[int] = None
+
+
+class TemporaryPlanDraftResponse(BaseResponse):
+    request_id: str
+    status: str
+    review_required: bool = True
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    device_type: str
+    maintenance_level: Optional[str] = None
+    estimated_duration: Optional[int] = None
+    preparation_checklist: List[str] = Field(default_factory=list)
+    steps: List[TemporaryPlanStep] = Field(default_factory=list)
+    evidence: List[TemporaryPlanEvidence] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
 # ==================== 案例相关 ====================
 
 class CaseItem(BaseModel):

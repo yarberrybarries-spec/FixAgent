@@ -210,6 +210,23 @@ class KnowledgeRetrievalTool(BaseTool):
                     self._mark_route(doc, "table_vector")
                     for doc in vector_service.search(vector, top_k=recall_k, include_metadata=True, filter=table_filter)
                 )
+            if not candidates and base_filter and not document_id:
+                logger.info("No evidence matched optional retrieval filters; retrying without inferred metadata filters")
+                relaxed_filter = self._build_filter(chunk_type=chunk_type) if chunk_type else None
+                if chunk_type or intent != "image":
+                    candidates.extend(
+                        self._mark_route(doc, "semantic_relaxed")
+                        for doc in vector_service.search(
+                            vector, top_k=recall_k, include_metadata=True, filter=relaxed_filter
+                        )
+                    )
+                if hasattr(vector_service, "keyword_search") and (chunk_type or intent != "image"):
+                    candidates.extend(
+                        self._mark_route(doc, "keyword_relaxed")
+                        for doc in vector_service.keyword_search(
+                            query, top_k=recall_k, include_metadata=True, filter=relaxed_filter
+                        )
+                    )
         except Exception as e:
             raise ToolException(code="SEARCH_FAILED", message=f"retrieval search failed: {e}")
 

@@ -12,7 +12,13 @@ from fastapi.staticfiles import StaticFiles
 json_dumps = partial(json.dumps, ensure_ascii=False)
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
-from schemas.request import ChatRequest, KnowledgeImportRequest, KnowledgeSearchRequest, MemoryConsolidateRequest
+from schemas.request import (
+    ChatRequest,
+    KnowledgeImportRequest,
+    KnowledgeSearchRequest,
+    MemoryConsolidateRequest,
+    TemporaryPlanGenerateRequest,
+)
 from schemas.response import (
     BaseResponse,
     ChatResponse,
@@ -21,6 +27,7 @@ from schemas.response import (
     KnowledgeSearchResponse,
     KnowledgeStorageStatsResponse,
     MemoryConsolidateResponse,
+    TemporaryPlanDraftResponse,
 )
 from agents.fix_agent import get_fix_agent
 from agents.review_agent import get_review_agent
@@ -28,6 +35,7 @@ from agents.memory_agent import get_memory_agent
 from agents.base_agent import AgentInput, AgentOutput
 from services.vector_service import get_vector_service
 from tools.knowledge_retrieval_tool import get_knowledge_retrieval_tool
+from services.temporary_plan_service import get_temporary_plan_service
 from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -44,16 +52,18 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     # 启动：开启 MQ 消费者
-    from mq.consumer import start_consumers
-    from mq.connection import close_connection
+    close_connection = None
     try:
+        from mq.consumer import start_consumers
+        from mq.connection import close_connection
         await start_consumers()
         logger.info("[启动] RabbitMQ 消费者已启动")
     except Exception as e:
         logger.warning("[启动] RabbitMQ 消费者启动失败（MQ不可用时降级为HTTP模式）: %s", e)
     yield
     # 关闭：断开 MQ 连接
-    await close_connection()
+    if close_connection is not None:
+        await close_connection()
 
 app = FastAPI(
     title="FixAgent AI Module",
@@ -100,11 +110,16 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
         if fix_result.metadata.get("status") == "error":
             logger.warning(f"[chat] 会话={request.session_id} 诊断Agent错误: {fix_result.metadata.get('error_detail')}")
-            return ChatResponse(
-                session_id=request.session_id,
-                message=fix_result.message,
-                tools_used=None,
-                latency_ms=fix_result.latency_ms
+            return JSONResponse(
+                status_code=500,
+                content=ChatResponse(
+                    success=False,
+                    code=500,
+                    session_id=request.session_id,
+                    message=fix_result.message,
+                    tools_used=None,
+                    latency_ms=fix_result.latency_ms
+                ).model_dump()
             )
 
         final_result = await get_review_agent().review(fix_result)
@@ -208,7 +223,7 @@ async def chat_stream(request: ChatRequest):
             verified_output = await get_review_agent().review(fix_output)
             verification = verified_output.metadata.get("verification", {})
             has_issues = verified_output.metadata.get("verification_has_issues", False)
-            markers = get_review_agent().get_inline_markers(full_message, verification)
+            markers = get_review_agent().get_inline_markers(verified_output.message, verification)
 
             # 流式输出最终回答（逐字），在未验证语句前插入 marker 事件
             final_message = verified_output.message
@@ -386,6 +401,16 @@ async def knowledge_search(request: KnowledgeSearchRequest) -> KnowledgeSearchRe
         raise
     except Exception as e:
         logger.exception(f"[knowledge_search] error")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/ai/temporary-plan/generate", response_model=TemporaryPlanDraftResponse)
+async def temporary_plan_generate(request: TemporaryPlanGenerateRequest) -> TemporaryPlanDraftResponse:
+    """基于知识证据生成仅供审核的临时检修计划草稿。"""
+    try:
+        return await get_temporary_plan_service().generate(request)
+    except Exception as e:
+        logger.exception("[temporary_plan_generate] error")
         raise HTTPException(status_code=500, detail=str(e))
 
 

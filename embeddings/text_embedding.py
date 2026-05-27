@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 class TextEmbedding:
     """文本向量化服务，使用 qwen2.5-vl-embedding 统一模型。"""
 
+    _RETRY_DELAYS = (0.5, 1.0)
+
     def __init__(self):
         self.settings = get_settings()
         self.model = "qwen2.5-vl-embedding"
@@ -73,15 +75,30 @@ class TextEmbedding:
 
         raise ValueError(f"Embedding API 响应格式异常: {resp}")
 
+    async def _call_api_with_retry(self, inputs: List[dict]) -> List[List[float]]:
+        for attempt in range(len(self._RETRY_DELAYS) + 1):
+            try:
+                return await asyncio.to_thread(self._call_api_sync, inputs)
+            except RuntimeError as exc:
+                if attempt >= len(self._RETRY_DELAYS):
+                    raise
+                delay = self._RETRY_DELAYS[attempt]
+                logger.warning(
+                    "Embedding API temporary failure, retrying in %.1fs (attempt %s/%s): %s",
+                    delay,
+                    attempt + 2,
+                    len(self._RETRY_DELAYS) + 1,
+                    exc,
+                )
+                await asyncio.sleep(delay)
+
     async def embed(self, text: str) -> List[float]:
         """单条文本向量化。"""
         cached = self._get_from_cache(text)
         if cached is not None:
             return cached
 
-        embeddings = await asyncio.to_thread(
-            self._call_api_sync, [{"text": text}]
-        )
+        embeddings = await self._call_api_with_retry([{"text": text}])
         result = embeddings[0]
         self._set_to_cache(text, result)
         return result
@@ -104,9 +121,7 @@ class TextEmbedding:
                 uncached_items.append((i, text))
 
         for idx, text in uncached_items:
-            new_embeddings = await asyncio.to_thread(
-                self._call_api_sync, [{"text": text}]
-            )
+            new_embeddings = await self._call_api_with_retry([{"text": text}])
             emb = new_embeddings[0]
             results[idx] = emb
             self._set_to_cache(text, emb)

@@ -40,6 +40,27 @@ class _GroundingCheck:
 
     THRESHOLD = 0.35
 
+    _MEASUREMENT_PATTERN = re.compile(
+        r'\d[\d,]*(?:\.\d+)?(?:/\d+(?:\.\d+)?)?\s*'
+        r'(?:(?:[～~\-–—]|±)\s*\d+(?:\.\d+)?)?\s*'
+        r'(?:N\s*[·.]?\s*m|N|mm|cm|km|公里|个月|月|小时|分钟|秒|h|min|'
+        r'℃|°[CF]?|MPa|kPa|V|%|整?圈)',
+        re.IGNORECASE,
+    )
+    _MODEL_PATTERN = re.compile(
+        r'(?:型号|规格|推荐型号|推荐使用)[：:\s]*(?:为|使用)?\s*'
+        r'([A-Z]{1,8}(?:[\s-]?[A-Z0-9]*\d[A-Z0-9-]*)+)',
+        re.IGNORECASE,
+    )
+    _MODEL_REFERENCE_PATTERN = re.compile(
+        r'(?:[A-Z]{2,}\s+)?[A-Z]+\d[A-Z0-9-]*(?:-[A-Z0-9-]+)?',
+        re.IGNORECASE,
+    )
+    _SAFETY_WORDS = (
+        "断开负极", "断开蓄电池", "切断电源", "断电", "验电", "泄压",
+        "停止运行", "停机", "禁止启动", "佩戴护目镜", "佩戴防护手套",
+    )
+
     _FACTUAL_KEYWORDS = [
         "建议", "需要", "必须", "检查", "更换", "维修",
         "原因", "导致", "造成", "引起", "可能", "一般",
@@ -77,6 +98,33 @@ class _GroundingCheck:
         return False
 
     @staticmethod
+    def _normalize(text: str) -> str:
+        value = text.upper().replace("，", ",").replace("·", ".").replace("～", "~")
+        value = re.sub(r'[\s,]', '', value)
+        return value
+
+    @classmethod
+    def _extract_critical_claims(cls, sentence: str) -> List[str]:
+        claims: List[str] = []
+        for match in cls._MEASUREMENT_PATTERN.finditer(sentence):
+            value = match.group(0).strip()
+            if value and value not in claims:
+                claims.append(value)
+        for match in cls._MODEL_PATTERN.finditer(sentence):
+            value = match.group(1).strip()
+            if value and value not in claims:
+                claims.append(value)
+        if any(word in sentence for word in ("型号", "规格", "匹配", "推荐")):
+            for match in cls._MODEL_REFERENCE_PATTERN.finditer(sentence):
+                value = match.group(0).strip()
+                if value and value not in claims:
+                    claims.append(value)
+        for word in cls._SAFETY_WORDS:
+            if word in sentence and word not in claims:
+                claims.append(word)
+        return claims
+
+    @staticmethod
     def _cosine(a: List[float], b: List[float]) -> float:
         dot = sum(x * y for x, y in zip(a, b))
         na = math.sqrt(sum(x * x for x in a))
@@ -85,20 +133,40 @@ class _GroundingCheck:
             return 0.0
         return dot / (na * nb)
 
-    @staticmethod
-    def _collect_evidence(react_trace: List[Dict]) -> List[str]:
-        texts = []
+    @classmethod
+    def _extract_result_text(cls, value: Any) -> List[str]:
+        if isinstance(value, list):
+            texts: List[str] = []
+            for item in value:
+                texts.extend(cls._extract_result_text(item))
+            return texts
+        if isinstance(value, dict):
+            texts = []
+            for key in ("content", "text", "summary", "caption", "image_summary"):
+                content = value.get(key)
+                if isinstance(content, str) and content.strip():
+                    texts.append(content)
+            if texts:
+                return texts
+            for child in value.values():
+                texts.extend(cls._extract_result_text(child))
+            return texts
+        return []
+
+    @classmethod
+    def _collect_evidence(cls, react_trace: List[Dict]) -> List[str]:
+        texts: List[str] = []
         for step in react_trace:
             if step.get("action") != "tool_call":
                 continue
             for tc in step.get("tool_calls", []):
-                args = tc.get("arguments", {})
-                q = args.get("query", "") or args.get("keyword", "")
-                if q:
-                    texts.append(q)
-                s = tc.get("result_summary", "")
-                if s:
-                    texts.append(s)
+                if tc.get("name") != "knowledge_retrieval":
+                    continue
+                result_data = tc.get("result_data")
+                if result_data is not None:
+                    texts.extend(cls._extract_result_text(result_data))
+                elif tc.get("result_summary"):
+                    texts.append(tc["result_summary"])
         return texts
 
     @classmethod
@@ -110,34 +178,87 @@ class _GroundingCheck:
 
         evidence = cls._collect_evidence(react_trace)
         if not evidence:
-            return {"unverified_claims": [{"sentence": s, "max_similarity": 0.0} for s in factual],
+            return {"unverified_claims": [
+                        {"sentence": s, "max_similarity": 0.0,
+                         "critical_claims": cls._extract_critical_claims(s)}
+                        for s in factual
+                    ],
+                    "verified_claims": [],
                     "total_claims": len(factual), "verified_count": 0,
                     "unverified_count": len(factual), "threshold": cls.THRESHOLD,
                     "note": "无工具调用记录，无法验证"}
 
+        evidence_text = "\n".join(evidence)
+        normalized_evidence = cls._normalize(evidence_text)
+        unverified = []
+        verified_claims = []
+        remaining_factual = []
+
+        for sentence in factual:
+            critical_claims = cls._extract_critical_claims(sentence)
+            if not critical_claims:
+                remaining_factual.append(sentence)
+                continue
+            unmatched = [
+                claim for claim in critical_claims
+                if cls._normalize(claim) not in normalized_evidence
+            ]
+            if unmatched:
+                matched = [claim for claim in critical_claims if claim not in unmatched]
+                unverified.append({
+                    "sentence": sentence,
+                    "critical_claims": critical_claims,
+                    "matched_claims": matched,
+                    "unmatched_claims": unmatched,
+                    "reason": "关键内容未找到明确依据",
+                })
+            else:
+                verified_claims.append({
+                    "sentence": sentence,
+                    "critical_claims": critical_claims,
+                    "verified_by": "literal_evidence",
+                })
+
+        if not remaining_factual:
+            verified_count = len(verified_claims)
+            return {"unverified_claims": unverified, "verified_claims": verified_claims,
+                    "total_claims": len(factual), "verified_count": verified_count,
+                    "unverified_count": len(unverified), "threshold": cls.THRESHOLD}
+
         try:
             from embeddings.text_embedding import get_text_embedding
-            vecs = await get_text_embedding().embed_batch(factual + evidence)
-            n = len(factual)
+            vecs = await get_text_embedding().embed_batch(remaining_factual + evidence)
+            n = len(remaining_factual)
             sent_vecs, ev_vecs = vecs[:n], vecs[n:]
         except Exception as e:
             logger.warning(f"[grounding] 向量化失败: {e}")
-            return {"unverified_claims": [], "total_claims": len(factual),
-                    "verified_count": len(factual), "unverified_count": 0,
-                    "threshold": cls.THRESHOLD, "error": str(e), "note": "向量化失败，默认通过"}
+            unverified.extend({
+                "sentence": sentence,
+                "max_similarity": 0.0,
+                "critical_claims": cls._extract_critical_claims(sentence),
+                "reason": "审核服务暂不可用，无法确认",
+            } for sentence in remaining_factual)
+            return {"unverified_claims": unverified, "verified_claims": verified_claims,
+                    "total_claims": len(factual), "verified_count": len(verified_claims),
+                    "unverified_count": len(unverified), "threshold": cls.THRESHOLD,
+                    "error": str(e), "note": "向量化失败，无法确认"}
 
-        unverified = []
-        verified_count = 0
         for i, sv in enumerate(sent_vecs):
             sims = [cls._cosine(sv, ev) for ev in ev_vecs]
             best = max(sims) if sims else 0.0
             if best < cls.THRESHOLD:
-                unverified.append({"sentence": factual[i], "max_similarity": round(best, 4)})
+                unverified.append({"sentence": remaining_factual[i], "max_similarity": round(best, 4)})
             else:
-                verified_count += 1
+                verified_claims.append({
+                    "sentence": remaining_factual[i],
+                    "max_similarity": round(best, 4),
+                    "verified_by": "semantic_evidence",
+                })
 
-        logger.info(f"[grounding] 总声明={n} 已验证={verified_count} 未验证={len(unverified)}")
-        return {"unverified_claims": unverified, "total_claims": n,
+        verified_count = len(verified_claims)
+        logger.info(f"[grounding] 总声明={len(factual)} 已验证={verified_count} 未验证={len(unverified)}")
+        return {"unverified_claims": unverified, "verified_claims": verified_claims,
+                "total_claims": len(factual),
                 "verified_count": verified_count, "unverified_count": len(unverified),
                 "threshold": cls.THRESHOLD}
 
@@ -387,6 +508,50 @@ class ReviewAgent:
     def description(self) -> str:
         return "输出审核：3层确定性校验（检索依据/图谱路径/安全规则）"
 
+    @staticmethod
+    def _move_unverified_critical_lines(message: str, grounding: Dict[str, Any]) -> tuple[str, List[str]]:
+        """Remove unsupported high-risk lines from formal guidance for separate display."""
+        targets = [
+            item.get("sentence", "").strip()
+            for item in grounding.get("unverified_claims", [])
+            if item.get("critical_claims") and item.get("sentence", "").strip()
+        ]
+        if not targets:
+            return message, []
+
+        normalized_targets = {
+            re.sub(r'[。；;\s]+$', '', target).strip()
+            for target in targets
+        }
+        kept_lines: List[str] = []
+        removed: List[str] = []
+        for line in message.splitlines():
+            candidate = re.sub(r'[。；;\s]+$', '', line.strip()).strip()
+            if any(target == candidate or target in candidate for target in normalized_targets):
+                clean = line.strip().lstrip("-* ").strip()
+                if clean not in removed:
+                    removed.append(clean)
+                continue
+            kept_lines.append(line)
+
+        formal_message = "\n".join(kept_lines).strip()
+        if not formal_message:
+            formal_message = "当前资料不足以形成可确认的正式操作指引。"
+        return formal_message, removed
+
+    @staticmethod
+    def _confirmed_critical_values(grounding: Dict[str, Any]) -> List[str]:
+        values: List[str] = []
+        for claim in grounding.get("verified_claims", []):
+            for value in claim.get("critical_claims", []):
+                if value not in values:
+                    values.append(value)
+        for claim in grounding.get("unverified_claims", []):
+            for value in claim.get("matched_claims", []):
+                if value not in values:
+                    values.append(value)
+        return values
+
     async def review(self, fix_output: AgentOutput) -> AgentOutput:
         """
         对 FixAgent 输出执行 3 层校验。
@@ -417,10 +582,32 @@ class ReviewAgent:
             safety.get("missing_count", 0) > 0
         )
 
-        final_message = message
+        final_message, held_for_confirmation = self._move_unverified_critical_lines(message, grounding)
+        sections = [final_message]
+        confirmed_values = self._confirmed_critical_values(grounding)
+        if confirmed_values:
+            confirmed_lines = "\n".join(f"- {value}" for value in confirmed_values)
+            sections.append(
+                "## 已核对关键值\n"
+                "以下数值或型号可在当前知识依据中找到明确匹配：\n"
+                f"{confirmed_lines}"
+            )
+        if held_for_confirmation:
+            pending_lines = "\n".join(f"- {text}" for text in held_for_confirmation)
+            sections.append(
+                "## 待确认信息\n"
+                "以下关键内容未在当前知识依据中找到明确出处，已从正式指引中移出：\n"
+                f"{pending_lines}"
+            )
+
         appended = safety.get("appended_text", "")
         if appended:
-            final_message = f"{message}\n\n---\n{appended}"
+            sections.append(
+                "## 系统通用安全提醒\n"
+                "以下提醒来自系统预设安全规则，不代表当前手册原文：\n\n"
+                f"{appended}"
+            )
+        final_message = "\n\n".join(section for section in sections if section)
 
         latency = verification["verification_latency_ms"]
         logger.info(
@@ -442,6 +629,7 @@ class ReviewAgent:
                 **fix_output.metadata,
                 "verification": verification,
                 "verification_has_issues": has_issues,
+                "held_for_confirmation": held_for_confirmation,
                 "total_latency_ms": fix_output.latency_ms + latency,
             },
             latency_ms=fix_output.latency_ms + latency,
@@ -466,6 +654,8 @@ class ReviewAgent:
 
         # grounding 未验证声明 → 在声明句首插入标记
         for claim in grounding.get("unverified_claims", []):
+            if claim.get("critical_claims"):
+                continue
             sentence = claim.get("sentence", "")
             if not sentence:
                 continue

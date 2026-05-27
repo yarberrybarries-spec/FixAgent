@@ -1,3 +1,4 @@
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 from test_runner import print_json, require_env_value, require_real_dependency, run_async, run_auto_cases, run_menu
@@ -5,6 +6,7 @@ from test_runner import print_json, require_env_value, require_real_dependency, 
 
 def auto_test():
     from services.llm_service import LLMService
+    from schemas.models import VectorSearchResult
 
     async def chat_non_stream():
         svc = LLMService()
@@ -40,6 +42,34 @@ def auto_test():
         result = await svc.chat_with_tools([{"role": "user", "content": "查轴承"}], [{"type": "function", "function": {"name": "demo_tool"}}], {"demo_tool": handler})
         return {"content": result["content"], "trace_len": len(result["trace"]), "first_action": result["trace"][0]["action"]}
 
+    async def chat_with_pydantic_tool_result():
+        svc = LLMService()
+        svc._sync_chat_with_tools = AsyncMock(side_effect=[
+            {
+                "content": "",
+                "tool_calls": [{
+                    "id": "call1",
+                    "function": {"name": "knowledge_retrieval", "arguments": "{\"query\":\"轴承\"}"},
+                }],
+                "finish_reason": "tool_calls",
+            },
+            {"content": "已生成步骤", "tool_calls": [], "finish_reason": "stop"},
+        ])
+
+        async def handler(query):
+            return [VectorSearchResult(id="doc1", score=0.9, content=f"{query}维修步骤")]
+
+        result = await svc.chat_with_tools(
+            [{"role": "user", "content": "查轴承"}],
+            [{"type": "function", "function": {"name": "knowledge_retrieval"}}],
+            {"knowledge_retrieval": handler},
+        )
+        tool_messages = svc._sync_chat_with_tools.call_args_list[1].args[2]["messages"]
+        return {
+            "tool_message": json.loads(tool_messages[-1]["content"]),
+            "trace_data": result["trace"][0]["tool_calls"][0].get("result_data"),
+        }
+
     async def max_iterations():
         svc = LLMService()
         svc._sync_chat_with_tools = AsyncMock(return_value={
@@ -73,6 +103,15 @@ def auto_test():
             "expected": "trace 包含 tool_call 和 finish",
             "run": lambda: run_async(chat_with_single_tool()),
             "check": lambda x: x["content"] == "工具后回答" and x["trace_len"] == 2 and x["first_action"] == "tool_call",
+        },
+        {
+            "name": "chat_with_tools 可将 VectorSearchResult 工具结果传回模型",
+            "input": "knowledge_retrieval 返回 Pydantic 模型列表",
+            "expected": "工具消息包含可 JSON 序列化的 doc1",
+            "run": lambda: run_async(chat_with_pydantic_tool_result()),
+            "check": lambda x: x["tool_message"][0]["id"] == "doc1"
+            and x["tool_message"][0]["content"] == "轴承维修步骤"
+            and x["trace_data"][0]["id"] == "doc1",
         },
         {
             "name": "chat_with_tools 超过 max_iterations 抛 RuntimeError",
